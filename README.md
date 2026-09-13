@@ -44,11 +44,42 @@ uv sync
 
 ## 4. Dataset
 
-- **Core:** FinQA train (~6k)
-- **Target training size:** 6–8k after mixing synthetic SEC-filing examples (synthetic capped at 30–40%)
-- **Eval sets:** (1) FinQA test, (2) custom decontaminated eval n≈400–500, (3) time-split SEC eval — filings dated after the base model's training cutoff
-- **Decontamination:** n-gram overlap of all training data vs. eval sets — method + results: TODO
-- **Licenses:** TODO (dataset card)
+- **Source:** FinQA canonical release (`github.com/czyssrs/FinQA` JSONs, sha256
+  logged in dataset card) — license **CC-BY-4.0**
+- **Core training set:** FinQA train (~6k pre-filter; exact post-filter count
+  logged at dataset assembly)
+- **Target training size:** 6–8k after mixing synthetic SEC-filing examples
+  (synthetic capped at 30–40%)
+- **Eval sets:** (1) FinQA test, (2) custom decontaminated eval n≈400–500,
+  (3) time-split SEC eval — filings dated after the base model's training cutoff
+
+### Gold-selection policy (locked 2026-09-13, extractor v1.1)
+
+All scoring uses `src/opentune/extract.py` (task-spec v1.1, 40-unit-test suite).
+
+1. Primary gold: `exe_ans` (raw numeric)
+2. Fallback: `answer` string if `exe_ans` fails extraction
+3. Example dropped if neither field parses — applied identically to every
+   model and arm; counts logged per split in the dataset card
+
+**Non-numeric tail:** FinQA contains yes/no questions, empty answers, and
+occasional annotation garbage — incompatible with numeric exact-match scoring.
+Smoke validation on the full dev split (1,766 gold values): 97.7% parse
+coverage; all failures accounted for as non-numeric/empty golds. Per-example
+exclusion count computed at dataset assembly (Day 3).
+
+### Known annotation limitations
+
+- Unit-burdened golds (e.g. `$ 108 million`) are excluded rather than guessed —
+  the intended scale is context-dependent
+- Rare annotation garbage (table row bled into answer field) — excluded
+- LaTeX-escape artifacts (`4.9\n`) and scientific-notation golds (`1e-05`) are
+  handled by the parser (extractor v1.1)
+
+### Decontamination
+
+N-gram overlap of all training data (incl. FinQA itself) vs. all eval sets —
+method + results: TODO (Day 3+; checked into dataset card)
 
 ## 5. Decisions Log
 

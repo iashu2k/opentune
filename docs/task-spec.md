@@ -1,4 +1,4 @@
-# Task Spec — Financial QA (v1, locked 2026-09-13)
+# Task Spec — Financial QA (v1.1, locked 2026-09-13)
 
 This document is the frozen contract that `src/opentune/extract.py` implements.
 Changes to scoring semantics require a version bump here AND updates to the test
