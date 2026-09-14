@@ -70,14 +70,15 @@ def build_candidates(cik: int, name: str) -> list[dict]:
                 key=lambda f: f["end"])
     for a, b in zip(fs, fs[1:]):
       if a["val"] and b["val"] and abs(a["val"]) > 0:
-        gold = (b["val"] - a["val"]) / abs(a["val"])
+        base = abs(a["val"])
+        gold = (b["val"] - a["val"]) / base
         if 0.0005 < abs(gold) < 10:
           cands.append({
               "company": name,
               "question": f"what was the percentage change in {label} "
               f"from the period ended {a['end']} to the period ended {b['end']}?",
               "concepts": [(label, a["end"], a["val"]), (label, b["end"], b["val"])],
-              "program": f"subtract({b['val']}, {a['val']}), divide(#0, {a['val']})",
+              "program": f"subtract({b['val']}, {a['val']}), divide(#0, {base})",
               "gold": round(gold, 5),
               "filed": b["filed"],
           })
