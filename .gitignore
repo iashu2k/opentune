@@ -1,5 +1,7 @@
 data/raw/
 *.parquet
+!data/eval/*.parquet
+!data/processed/*.parquet
 .ipynb_checkpoints/
 wandb/
 .env
