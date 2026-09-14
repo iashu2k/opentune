@@ -11,18 +11,19 @@ Changes vs v1:
 Resumable: predictions append to results/raw/{model}__{arm}__{evalset}.jsonl;
 reruns skip completed ids.
 """
-
 from __future__ import annotations
-
-import argparse
-import json
-import time
-from pathlib import Path
-
-import pandas as pd
-
-from opentune.extract import score
+import os
 from opentune.prompts.templates import render_prompt
+from opentune.extract import score
+import pandas as pd
+from pathlib import Path
+import time
+import json
+import argparse
+
+# see experiment log: multi-GPU mask bug
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 
 RESULTS_DIR = Path("results/raw")
 MAX_NEW_TOKENS = 640
