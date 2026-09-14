@@ -88,3 +88,12 @@ ran; switched to the piecewise rule above. Logged in the README experiment log.
 | `ANSWER: N/A` | `42` | ✗ | NON_NUMERIC |
 | `The answer: 42.` (mid-paragraph) | `42` | ✗ | no answer line |
 | *(no answer line)* | `42` | ✗ | NO_ANSWER |
+
+## Operator inventory (decontaminated train, 2026-09-13)
+
+Core: divide 4,175 | subtract 2,540 | add 1,480 | multiply 550
+Table band: table_average 92 | table_max 48 | table_sum 34 | table_min 27
+Tail: exp 5 | power/greater: absent
+
+Phase 2 ruling: format-reward grammar = full observed set; no generation
+constraint for Phase 0–1. Revisit if GRPO samples ungrammatical ops.
