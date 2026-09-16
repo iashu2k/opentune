@@ -1,0 +1,194 @@
+{
+  "cells": [
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "cot",
+      "eval_set": "custom_eval",
+      "n": 450,
+      "acc": 0.6288888888888889,
+      "ci_lo": 0.5844444444444444,
+      "ci_hi": 0.6733333333333333,
+      "status_counts": {
+        "ok": 414,
+        "no_answer_line": 24,
+        "non_numeric_answer": 12
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "cot",
+      "eval_set": "finqa_test",
+      "n": 1127,
+      "acc": 0.6557231588287489,
+      "ci_lo": 0.6282165039929015,
+      "ci_hi": 0.6832298136645962,
+      "status_counts": {
+        "ok": 1055,
+        "no_answer_line": 49,
+        "non_numeric_answer": 23
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "cot",
+      "eval_set": "sec_2026",
+      "n": 180,
+      "acc": 0.7333333333333333,
+      "ci_lo": 0.6666666666666666,
+      "ci_hi": 0.7944444444444444,
+      "status_counts": {
+        "ok": 174,
+        "no_answer_line": 4,
+        "non_numeric_answer": 2
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "few_shot",
+      "eval_set": "custom_eval",
+      "n": 450,
+      "acc": 0.6,
+      "ci_lo": 0.5533333333333333,
+      "ci_hi": 0.6444444444444445,
+      "status_counts": {
+        "ok": 440,
+        "non_numeric_answer": 8,
+        "no_answer_line": 2
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "few_shot",
+      "eval_set": "sec_2026",
+      "n": 180,
+      "acc": 0.49444444444444446,
+      "ci_lo": 0.4222222222222222,
+      "ci_hi": 0.5666666666666667,
+      "status_counts": {
+        "ok": 179,
+        "no_answer_line": 1
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "zero_shot",
+      "eval_set": "custom_eval",
+      "n": 450,
+      "acc": 0.4533333333333333,
+      "ci_lo": 0.4088333333333334,
+      "ci_hi": 0.5,
+      "status_counts": {
+        "no_answer_line": 41,
+        "ok": 399,
+        "non_numeric_answer": 10
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "zero_shot",
+      "eval_set": "finqa_test",
+      "n": 1127,
+      "acc": 0.47471162377994675,
+      "ci_lo": 0.4454303460514641,
+      "ci_hi": 0.5039929015084295,
+      "status_counts": {
+        "ok": 994,
+        "no_answer_line": 113,
+        "non_numeric_answer": 20
+      }
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "arm": "zero_shot",
+      "eval_set": "sec_2026",
+      "n": 180,
+      "acc": 0.5833333333333334,
+      "ci_lo": 0.5111111111111111,
+      "ci_hi": 0.6555555555555556,
+      "status_counts": {
+        "ok": 145,
+        "non_numeric_answer": 33,
+        "no_answer_line": 2
+      }
+    }
+  ],
+  "mcnemar": [
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "custom_eval",
+      "arm_a": "cot",
+      "arm_b": "few_shot",
+      "b": 63,
+      "c": 50,
+      "discordant": 113,
+      "p": 0.25886200016531563,
+      "n_shared": 450
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "custom_eval",
+      "arm_a": "cot",
+      "arm_b": "zero_shot",
+      "b": 104,
+      "c": 25,
+      "discordant": 129,
+      "p": 1.1955847474890754e-12,
+      "n_shared": 450
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "custom_eval",
+      "arm_a": "few_shot",
+      "arm_b": "zero_shot",
+      "b": 97,
+      "c": 31,
+      "discordant": 128,
+      "p": 4.155995426933083e-09,
+      "n_shared": 450
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "finqa_test",
+      "arm_a": "cot",
+      "arm_b": "zero_shot",
+      "b": 253,
+      "c": 49,
+      "discordant": 302,
+      "p": 2.6850339040772086e-34,
+      "n_shared": 1127
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "sec_2026",
+      "arm_a": "cot",
+      "arm_b": "few_shot",
+      "b": 71,
+      "c": 28,
+      "discordant": 99,
+      "p": 1.8257600947585227e-05,
+      "n_shared": 180
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "sec_2026",
+      "arm_a": "cot",
+      "arm_b": "zero_shot",
+      "b": 43,
+      "c": 16,
+      "discordant": 59,
+      "p": 0.0005843646280443461,
+      "n_shared": 180
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "eval_set": "sec_2026",
+      "arm_a": "few_shot",
+      "arm_b": "zero_shot",
+      "b": 35,
+      "c": 51,
+      "discordant": 86,
+      "p": 0.10522535125694396,
+      "n_shared": 180
+    }
+  ]
+}
