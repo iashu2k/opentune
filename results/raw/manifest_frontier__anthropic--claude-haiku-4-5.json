@@ -1,0 +1,24 @@
+{
+  "api_model_slug": "anthropic/claude-haiku-4.5",
+  "provider_pinned": "anthropic",
+  "arm": "cot",
+  "price_in_per_mtok": 1.0,
+  "price_out_per_mtok": 5.0,
+  "cumulative_cost_usd": 3.999396999999996,
+  "created": "2026-09-16T16:44:54",
+  "last_updated": "2026-09-16T18:05:35",
+  "eval_sets": {
+    "sec_2026": {
+      "n_total": 180,
+      "n_done": 180
+    },
+    "custom_eval": {
+      "n_total": 450,
+      "n_done": 450
+    },
+    "finqa_test": {
+      "n_total": 1127,
+      "n_done": 1127
+    }
+  }
+}
