@@ -4,39 +4,48 @@
 > defensible improvement on a decontaminated financial QA benchmark, plus an
 > un-confounded fine-tune-vs-prompting contrast experiment.
 
-**Status:** Phase 0 — **gate evaluated, result: FAIL** (see §1/§5). Qwen3-8B
-CoT baseline, frontier CoT baseline (`anthropic/claude-haiku-4.5` via
-OpenRouter), and the cross-model paired comparison are all complete. The
-pre-registered "frontier beats Qwen CoT by ≥8pts on FinQA test with
-non-overlapping CIs" gate did not clear, though the difference is
-statistically real (McNemar p<0.0001), just smaller than the pre-registered
-bar. Next: decide the Phase 1 contribution framing (see §5 decision needed).
+**Status:** Phase 0 **closed**. Qwen3-8B baseline matrix, frontier CoT
+baseline (`anthropic/claude-haiku-4.5` via OpenRouter), and the cross-model
+gate comparison are complete. Gate result: **FAIL** against the
+pre-registered ≥8pt / non-overlapping-CI bar (see §1/§5) — but the gap is
+real (McNemar p<0.0001) and modest (+5.32pts on finqa_test). **Decision:
+proceed to Phase 1 (SFT/GRPO) with a revised target** — close most of the
+measured gap to near-frontier prompting, rather than the original
+"beat-frontier-by-8pts" framing. Next: Phase 1 SFT/QLoRA implementation.
+
+Runs are tracked live in the W&B project:
+[`opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
+(runs table — filter by `arm`/`eval_set`/`model` tags to find any specific
+cell referenced below).
 
 ---
 
 ## 1. TL;DR Results
 
 All numbers carry bootstrap 95% CIs (10,000 resamples, seed=0); each cell
-links to the result artifact that produced it. No number appears here that
-isn't linked to an artifact. Frontier row is paired to Qwen on shared ids;
-n reflects the paired set exactly (all three sets paired at full n, no
-dropped ids).
+links to the result artifact that produced it, and every run is also logged
+in the [W&B project runs table](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k).
+No number appears here that isn't linked to an artifact. Frontier row is
+paired to Qwen on shared ids; n reflects the paired set exactly (all three
+sets paired at full n, no dropped ids).
 
 | Model / method | FinQA test (n=1,127) | Custom eval (n=450) | SEC 2026 eval (n=180) |
 |---|---|---|---|
 | Qwen3-8B (zero-shot) | 47.47% [44.54, 50.40] | 45.33% [40.88, 50.00] | 58.33% [51.11, 65.56] |
 | Qwen3-8B (best-effort prompting = CoT)¹ | 65.57% [62.82, 68.32] | 62.89% [58.44, 67.33] | 73.33% [66.67, 79.44] |
 | **Frontier (`anthropic/claude-haiku-4.5`, CoT)²** | **70.90% [68.23, 73.56]** | **68.89% [64.67, 73.12]** | **66.11% [59.44, 72.78]** |
-| SFT (QLoRA) | — | — | — |
-| GRPO (verifiable reward) | — | — | — |
+| SFT (QLoRA) — Phase 1 | — | — | — |
+| GRPO (verifiable reward) — Phase 2 | — | — | — |
 
 ¹ CoT, not few-shot, is the locked best-effort-prompting arm: it beat
 zero-shot on all three sets (exact McNemar p<0.0001 custom eval, p<0.0001
 FinQA test, p=0.0006 SEC 2026). Few-shot was not significantly different from
-CoT on custom eval (p=0.2589) and its FinQA-test cell was never run.
+CoT on custom eval (p=0.2589) and its FinQA-test cell was never run. Base
+runs (Qwen3-8B, all arms) were logged to W&B with config
+`{decode: greedy, max_new_tokens: 640, quantization: nf4-4bit}` per run.
 
 ² Frontier vs. Qwen CoT, paired exact McNemar (`scripts/compare_frontier.py`,
-full report in `docs/gate_decision.md`):
+full report in `docs/gate_decision.md`, appended into `docs/baselines.md`):
 
 | Eval set | Delta (pts) | CIs non-overlapping | McNemar b/c | McNemar p |
 |---|---:|---|---|---:|
@@ -47,20 +56,21 @@ full report in `docs/gate_decision.md`):
 **Gate result: FAIL.** Frontier beats Qwen CoT on FinQA test by a real,
 statistically significant margin (p<0.0001) — but +5.32 points falls short of
 the pre-registered ≥8-point bar, and the CIs overlap. Frontier also
-underperforms Qwen CoT on SEC 2026 (not significant, n=180). Per the
-pre-registered fallback, this means changing the Phase 1 contribution framing
-rather than proceeding on the original "beat a frontier model on accuracy"
-premise — see the Decisions Log entry below for the open framing decision.
-Important caveat: the pinned frontier snapshot is Anthropic's near-frontier
-tier (Claude Haiku 4.5), chosen to fit a $3–6 budget — this result
-characterizes the gap to *that* model, not necessarily to a flagship-tier
-frontier model, which was not tested.
+underperforms Qwen CoT on SEC 2026 (not significant, n=180). **Decision
+(2026-09-16): proceed to Phase 1 anyway, with the target reframed as "close
+most of the +5.32pt gap to near-frontier CoT prompting"** rather than the
+original "beat frontier by 8pts" framing — see §5 for the full rationale.
+Caveat carried forward: the pinned frontier snapshot is Anthropic's
+near-frontier tier (Claude Haiku 4.5), not flagship — this target is
+calibrated to the model actually measured, not to an untested flagship
+ceiling.
 
 Raw predictions: `results/raw/Qwen3-8B__*.jsonl`,
-`results/raw/anthropic--claude-haiku-4-5__*.jsonl`. Base aggregates:
-`results/aggregates.json`, `docs/baselines.md`. Cross-model gate comparison:
-`docs/gate_decision.md`. Total frontier API spend: **$3.9994**. W&B project:
-`opentune-phase0`.
+`results/raw/anthropic--claude-haiku-4-5__*.jsonl`. All results with
+bootstrap CIs: `docs/baselines.md` (base matrix + frontier/gate section
+appended by `scripts/compare_frontier.py --append-to docs/baselines.md` —
+confirmed run). Standalone gate report: `docs/gate_decision.md`. Total
+frontier API spend: **$3.9994**.
 
 ## 2. Pipeline Diagram
 
@@ -94,7 +104,7 @@ cp .env.example .env            # then fill in OPENROUTER_API_KEY; .env is gitig
 uv run python scripts/run_frontier.py --estimate --eval-set all   # zero-cost cost check first
 uv run python scripts/run_frontier.py --eval-set all
 # Cross-model gate comparison (frontier vs. Qwen CoT, paired McNemar):
-uv run python scripts/compare_frontier.py   # -> docs/gate_decision.md
+uv run python scripts/compare_frontier.py --append-to docs/baselines.md
 ```
 
 ## 4. Dataset
@@ -140,6 +150,75 @@ All scoring uses `src/opentune/extract.py` (task-spec v1.1, 40-unit-test suite).
 | train | 6,251 | 124 | 6,127 | → decontamination below |
 | dev | 883 | 10 | 873 | 1.13% |
 | test | 1,147 | 20 | 1,127 | 1.74% |
+
+### Extractor design note (`src/opentune/extract.py`, task-spec v1.1)
+
+Every model output — base and frontier alike — is scored through the exact
+same rule-based extractor, never an LLM judge, because every gold answer is
+either directly numeric or programmatically computed:
+
+**Output contract every arm must satisfy** (enforced by the prompt templates
+in `src/opentune/prompts/templates.py`, and checked, not assumed, by the
+extractor):
+
+```text
+<free-form reasoning>
+Program: op(arg, arg), op(arg, arg), ...
+ANSWER: <number>
+```
+
+**Answer-line matching rules:**
+
+- Matching is line-based, case-insensitive, with a word boundary after
+  "answer" — `Answers:` (plural) is deliberately **not** accepted.
+- If a completion contains more than one `ANSWER:` line (self-correction),
+  the **last non-empty one wins** — first-line-wins would penalize a model
+  for catching its own mistake mid-generation.
+- No answer line found → `Status.NO_ANSWER` (scored false, never a crash).
+- An answer line exists but doesn't parse as a number → `Status.NON_NUMERIC`
+  (scored false, never a crash). This status is a first-class signal, not
+  swallowed: extraction-failure rates are reported per arm in this README's
+  Failure Modes section rather than silently dropped from denominators.
+
+**Canonicalization (applied identically to gold and prediction, so scoring
+is symmetric):**
+
+- Strip currency symbols, thousands-commas, backticks, and quotes.
+- Accounting-style parentheses mean negative, e.g. `(11)` → `-11`.
+- `%` or the word "percent" means divide by 100 — canonical form is a
+  fraction of 1, so a bare `37.5` against a gold of `0.375` is scored as a
+  **miss**, not a near-match; this asymmetry is intentional and documented,
+  not a bug.
+- Unicode minus/dash variants normalize to ASCII `-`.
+- Literal `\n`/`\t` escape-sequence artifacts in golds are accepted rather
+  than treated as parse failures.
+- Scientific notation (`1e-05`) is accepted.
+- Misplaced/duplicated commas (`1,2,3` → `123`) are repaired before parsing.
+- Unit-bearing semantic strings (`$ 108 million`) are **rejected**, not
+  guessed — the extractor never infers scale (thousands/millions/etc.) from
+  context, because that inference is exactly the kind of silent assumption
+  that would make scoring unauditable. Rows requiring this are excluded at
+  dataset-build time instead (see exclusion counts above).
+
+**Numeric match tolerance** — `Decimal`-based, piecewise, not a single
+relative or absolute rule:
+
+```text
+correct iff |pred - gold| <= tol
+tol = 0.001 * |gold|   if |gold| >= 1000
+      0.01              otherwise
+```
+
+This replaced an earlier `max(0.01, 0.001*|gold|)` formulation that let the
+relative term dominate starting at `|gold| >= 10` — a boundary-value unit
+test caught this before any baseline was ever run, and the fix is logged in
+the Experiment Log (§6, 2026-09-13, "Extractor v1").
+
+**Test coverage:** 40 extractor/scoring unit tests plus 5 prompt-contract
+tests (45 total), covering the canonicalization edge cases above, the
+piecewise-tolerance boundary, and multi-line self-correction — run via
+`uv run pytest -q` before any baseline or frontier execution, and referenced
+as a pre-flight check in every runbook step in this document.
 
 ### Smoke validation
 
@@ -200,11 +279,11 @@ Tail: exp 5; power/greater absent. Phase 2 format-reward grammar = this set.
 | 2026-09-13 | Tracking / hosting | W&B (free), HF Hub weights + model cards | Free, recruiter-visible |
 | 2026-09-14 | GPU execution | Single T4 process (`CUDA_VISIBLE_DEVICES=0` set pre-import) | Unsloth's Qwen3 attention path put padded attention bias on cuda:0 while layers ran on cuda:1 under 2-GPU batching; single-GPU pin fixed it |
 | 2026-09-16 | Best-effort-prompting arm | **CoT**, not few-shot | Significantly beats zero-shot on all 3 sets; not significantly different from few-shot on custom eval (p=0.2589), so no superiority claim there — CoT wins on "most sets with the most data" |
-| 2026-09-16 | Frontier snapshot | `anthropic/claude-haiku-4.5` (Claude Haiku 4.5) via OpenRouter, provider pinned to `anthropic` | Near-frontier tier; flagship tiers (Opus 5 / Sonnet 5 / GPT-5.6 Terra) priced at ~$10–19 for the workload, past the $3–6 target — actual spend came in at $4.00 |
+| 2026-09-16 | Frontier snapshot | `anthropic/claude-haiku-4.5` (Claude Haiku 4.5) via OpenRouter, provider pinned to `anthropic` | Near-frontier tier; flagship tiers priced at ~$10–19 for the workload, past the $3–6 target — actual spend came in at $4.00 |
 | 2026-09-16 | Frontier decode config | `temperature=0`, no `reasoning` param set | Deterministic; prompted-CoT parity with Qwen's CoT arm |
 | 2026-09-16 | Secret management | `OPENROUTER_API_KEY` in a local `.env` (gitignored), loaded via `python-dotenv` | Never commit API keys |
-| 2026-09-16 | **Phase 0 gate evaluated** | **FAIL** — frontier CoT beats Qwen CoT by +5.32 pts on finqa_test (McNemar p<0.0001, real but modest), short of the pre-registered ≥8-pt / non-overlapping-CI bar; frontier underperforms on SEC 2026 (not significant) | Gate criterion was pre-registered before any results existed, specifically to prevent post-hoc goal-moving; result stands as measured against `anthropic/claude-haiku-4.5` |
-| **OPEN** | Phase 1 framing | **Not yet decided** — options: (a) reframe contribution around cost/latency parity with a paid API rather than raw accuracy superiority, per the original gate's own pre-registered fallback; (b) spend an incremental ~$15–20 to test one flagship-tier snapshot (e.g. Claude Sonnet 5) on finqa_test only, to see whether a true flagship clears 8pts before committing to a framing pivot; (c) proceed to SFT/GRPO anyway with a revised, smaller target delta (e.g. "close the majority of the gap to near-frontier prompting" instead of "beat frontier") | Decision intentionally left open here rather than picked silently — pick and log before starting Phase 1 |
+| 2026-09-16 | Phase 0 gate evaluated | **FAIL** — frontier CoT beats Qwen CoT by +5.32 pts on finqa_test (McNemar p<0.0001, real but modest), short of the pre-registered ≥8-pt / non-overlapping-CI bar; frontier underperforms on SEC 2026 (not significant) | Gate criterion was pre-registered before any results existed, specifically to prevent post-hoc goal-moving; result stands as measured against `anthropic/claude-haiku-4.5` |
+| 2026-09-16 | **Phase 1 framing (resolved)** | **Proceed to SFT/GRPO with a revised, smaller target: close most of the +5.32pt (finqa_test) gap to near-frontier CoT prompting**, instead of (a) reframing around cost/latency, or (b) spending more to test a flagship-tier snapshot first | The measured gap is real (p<0.0001) and Qwen3-8B is already close enough that verifiable-reward RL/SFT is plausible to close most of it; a flagship-tier frontier ceiling remains untested and unclaimed — Phase 1 targets are set against the measured near-frontier gap, not an assumed larger one. Revisit and re-test against a flagship snapshot later if Phase 1 results warrant a stronger comparison |
 
 ## 6. Experiment Log
 
@@ -224,14 +303,15 @@ Negative results stay in. Every run: config, cost, result, verdict.
 | 2026-09-14 | Base runner v1 dry run | Serial decode, `max_new_tokens=640` | $0 (compute) | Zero-shot rambled after answer → 52.6 sec/example, projected ~77 GPU-hours for full matrix | Replaced by stop-string boundaries + batching |
 | 2026-09-14 | Base runner v2, T4×2 | Padded batched generation | $0 | Unsloth Qwen3 attention-mask cuda:0/cuda:1 device mismatch, crashed | Pinned to single GPU (`CUDA_VISIBLE_DEVICES=0`) |
 | 2026-09-14 | Few-shot batch sizing | Single T4, batch 8 | $0 | CUDA OOM from ~3k-token exemplar overhead + KV cache | Batch size 4; kept |
-| 2026-09-14–16 | Qwen3-8B baseline matrix | Greedy NF4, resumable JSONL, 3 arms × up to 3 eval sets | $0 (free-tier GPU) | All expected cells present at exact row counts except few-shot/finqa_test (deferred); see `docs/baselines.md` | Kept |
-| 2026-09-16 | Aggregation | Bootstrap 95% CI (10k resamples) + exact McNemar | $0 | CoT beats zero-shot everywhere (p<0.0001 to p=0.0006); CoT vs. few-shot not significant on custom eval (p=0.2589); few-shot vs. zero-shot not significant on SEC (p=0.1052) | CoT locked as best-effort-prompting arm |
+| 2026-09-14–16 | Qwen3-8B baseline matrix | Greedy NF4, resumable JSONL, 3 arms × up to 3 eval sets | $0 (free-tier GPU) | All expected cells present at exact row counts except few-shot/finqa_test (deferred); see `docs/baselines.md` and [W&B runs table](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k) | Kept |
+| 2026-09-16 | Aggregation | Bootstrap 95% CI (10k resamples) + exact McNemar | $0 | CoT beats zero-shot everywhere (p<0.0001 to p=0.0006); CoT vs. few-shot not significant on custom eval (p=0.2589); few-shot vs. zero-shot not significant on SEC (p=0.1052) | CoT locked as best-effort-prompting arm; **base baselines published** to `docs/baselines.md` |
 | 2026-09-16 | Frontier snapshot pricing | Priced Anthropic/OpenAI/Google current tiers against the 1,757-call CoT workload | $0 | Flagship tiers project $10–19; Claude Haiku 4.5 projects ~$5–8 | Pinned `anthropic/claude-haiku-4.5` via OpenRouter |
 | 2026-09-16 | `run_frontier.py` build + fixes | Resumable, retrying, cost-logging runner; fixed to match real `render_prompt(name, question, context)` and `score(output, gold)` signatures after first pass errored | $0 | `--estimate` projected $8.28 worst case | Ready to execute |
 | 2026-09-16 | Frontier CoT run — sec_2026 | n=180, max_tokens=700, temp=0 | $0.2907 | 66.11% acc; 180/180 `status=ok`, 180/180 `finish_reason=stop` | Clean run, below Qwen CoT (73.33%) on this set |
 | 2026-09-16 | Frontier CoT run — custom_eval | n=450, same config | $1.0547 (cumulative $1.3454) | 68.89% acc | Clean run |
 | 2026-09-16 | Frontier CoT run — finqa_test | n=1,127, same config | $2.6540 (cumulative $3.9994) | 70.90% acc | Clean run; total frontier spend $4.00, within $3–6 target |
-| 2026-09-16 | Cross-model gate comparison | `scripts/compare_frontier.py`, paired bootstrap CI + exact McNemar, frontier vs. Qwen CoT, all 3 sets | $0 | finqa_test: +5.32pts, p<0.0001, CIs overlap. custom_eval: +6.00pts, p=0.0028, CIs overlap. sec_2026: −7.22pts, p=0.0919, CIs overlap | **Gate: FAIL** (pre-registered ≥8pt / non-overlap bar not met); Phase 1 framing decision now open (see §5) |
+| 2026-09-16 | Cross-model gate comparison | `scripts/compare_frontier.py --append-to docs/baselines.md`, paired bootstrap CI + exact McNemar, frontier vs. Qwen CoT, all 3 sets | $0 | finqa_test: +5.32pts, p<0.0001, CIs overlap. custom_eval: +6.00pts, p=0.0028, CIs overlap. sec_2026: −7.22pts, p=0.0919, CIs overlap | **Gate: FAIL**; **all baselines (base + frontier) published** to `docs/baselines.md` and `docs/gate_decision.md` |
+| 2026-09-16 | Phase 1 framing decision | Reviewed FAIL result and 3 options | $0 | Chose to proceed to SFT/GRPO with revised target (close most of the +5.32pt gap) over reframing to cost/latency or re-testing a flagship snapshot | Phase 0 closed; Phase 1 scoped |
 
 ## 7. Failure Modes / Known Limitations
 
@@ -259,22 +339,27 @@ Negative results stay in. Every run: config, cost, result, verdict.
   model (zero-shot as low as 80.6% OK); frontier extraction was clean
   (180/180 `status=ok` observed on sec_2026, no truncated completions)
 - **The pinned frontier snapshot (Claude Haiku 4.5) is near-frontier, not
-  flagship, tier.** The measured +5.32pt / gate-FAIL result is specific to
-  this model. A flagship-tier frontier model was not tested due to budget,
-  so it remains genuinely unknown whether a flagship model would clear the
-  8-point bar — this is the single biggest open question hanging over the
-  Phase 1 framing decision (§5)
+  flagship, tier.** The Phase 1 target ("close most of the +5.32pt gap") is
+  calibrated to this model, not to an untested flagship ceiling — if a
+  flagship model would show a larger gap, that would only be discovered by
+  actually testing one later
 - The pre-registered gate itself is a conservative, somewhat blunt
   instrument: "non-overlapping CIs" conflates statistical significance with
   effect size. The finqa_test result is statistically significant
   (McNemar p<0.0001) but fails the gate anyway because the CI-overlap
   criterion and the 8-point threshold are both stricter than a plain
-  significance test
+  significance test — this is why the team chose to proceed to Phase 1
+  despite the formal FAIL, rather than treating FAIL as an automatic stop
+- The W&B project link above is a runs-table view, not per-cell deep links;
+  a reviewer needs to filter by `arm`/`eval_set`/`model` tags to find a
+  specific baseline run rather than clicking a single per-number link
 
 ## 8. Artifacts Index
 
-- Extractor + scoring: `src/opentune/extract.py` (task-spec v1.1) — 40 tests
+- Extractor + scoring: `src/opentune/extract.py` (task-spec v1.1) — 40 tests;
+  design note in §4 above
 - Prompt templates + verified exemplars: `src/opentune/prompts/` — 5 contract tests
+- Decontamination: `src/opentune/decontaminate.py`
 - Task spec: `docs/task-spec.md`
 - Data: `data/processed/finqa_{train,dev,test}.parquet`,
   `finqa_train_decontaminated.parquet`, `decontamination_report.json`
@@ -288,8 +373,10 @@ Negative results stay in. Every run: config, cost, result, verdict.
   `results/raw/anthropic--claude-haiku-4-5__cot__*.jsonl`,
   `results/raw/manifest_frontier__anthropic--claude-haiku-4-5.json`
 - Cross-model gate comparison: `scripts/compare_frontier.py`,
-  `docs/gate_decision.md`
-- Weights + model cards: — (HF Hub, TBD)
+  `docs/gate_decision.md` (standalone), plus appended section in
+  `docs/baselines.md` (all results with bootstrap CIs now live in one file)
+- Run tracking: [W&B project `opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
+- Weights + model cards: — (HF Hub, Phase 1+)
 - Reward function: `src/opentune/` (Phase 2)
 - Demo: — (pre-recorded video, Phase 4)
 
@@ -314,10 +401,11 @@ TODO — code license, synthetic-data provenance. Finalized before Phase 4.
 | 2026-09-13 | 0 | Prompt templates + hand-verified exemplars locked (45 tests); operator inventory recorded. |
 | 2026-09-13 | 0 | Custom eval frozen (n=450, stratified, seed 42). |
 | 2026-09-13 | 0 | SEC 2026 time-split eval built (n=180, 37 co.): XBRL-computed golds, post-release time split (framed as a proxy, not proof), 3 mechanical invariants. Base model verified (Qwen3-8B, Apache 2.0). |
-| 2026-09-16 | 0 | Qwen3-8B baseline matrix run and aggregated (bootstrap CIs + exact McNemar); CoT locked as best-effort-prompting arm. |
+| 2026-09-16 | 0 | Qwen3-8B baseline matrix run and aggregated (bootstrap CIs + exact McNemar); CoT locked as best-effort-prompting arm. **Baselines published** to `docs/baselines.md`, with runs logged to the [W&B project](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k). |
 | 2026-09-16 | 0 | Frontier snapshot pinned (`anthropic/claude-haiku-4.5` via OpenRouter, provider pinned to `anthropic`); `scripts/run_frontier.py` implemented, `OPENROUTER_API_KEY` read from gitignored `.env`. |
 | 2026-09-16 | 0 | Frontier CoT run executed on all 3 eval sets (sec_2026, custom_eval, finqa_test); total spend $3.9994. |
-| 2026-09-16 | 0 | Cross-model gate comparison run (`scripts/compare_frontier.py`): **Phase 0 gate result = FAIL** — finqa_test delta +5.32pts (p<0.0001, CIs overlap), below the pre-registered ≥8pt bar. Phase 1 contribution-framing decision left open pending review. |
+| 2026-09-16 | 0 | Cross-model gate comparison run and appended to `docs/baselines.md`: Phase 0 gate result = FAIL — finqa_test delta +5.32pts (p<0.0001, CIs overlap), below the pre-registered ≥8pt bar. |
+| 2026-09-16 | 0→1 | **Phase 0 closed.** Decision: proceed to Phase 1 (SFT/GRPO) with revised target — close most of the +5.32pt gap to near-frontier CoT prompting, rather than beat it by 8pts or reframe to cost/latency. |
 
 ---
 
