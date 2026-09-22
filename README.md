@@ -11,12 +11,21 @@ pre-registered ≥8pt / non-overlapping-CI bar (see §1/§5) — but the gap is
 real (McNemar p<0.0001) and modest (+5.32pts on finqa_test). **Decision:
 proceed to Phase 1 (SFT/GRPO) with a revised target** — close most of the
 measured gap to near-frontier prompting, rather than the original
-"beat-frontier-by-8pts" framing. Next: Phase 1 SFT/QLoRA implementation.
+"beat-frontier-by-8pts" framing. **Phase 1 status (2026-09-22): success
+criterion pre-registered** (`docs/phase1_gate.md` — SFT must reach ≥69.07%
+on finqa_test, i.e. ≥+3.5pts over the 65.57% Qwen3-8B CoT baseline, with
+non-overlapping bootstrap 95% CIs, closing ≥60% of the measured 5.32pt gap
+to frontier CoT) **before any SFT training code or checkpoint exists.**
+Next: build the SFT training-data pipeline from the decontaminated FinQA
+train set.
 
-Runs are tracked live in the W&B project:
+Runs are tracked live in two W&B projects — kept separate so new Phase 1
+tags never get mixed into the frozen Phase 0 table:
 [`opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
-(runs table — filter by `arm`/`eval_set`/`model` tags to find any specific
-cell referenced below).
+(frozen — baseline matrix, frontier CoT, gate comparison) and
+`opentune-phase1` (new — SFT/QLoRA runs onward; filter by `arm`/`eval_set`/
+`model` tags to find any specific cell referenced below or in future
+checkpoints).
 
 ---
 
@@ -34,7 +43,7 @@ sets paired at full n, no dropped ids).
 | Qwen3-8B (zero-shot) | 47.47% [44.54, 50.40] | 45.33% [40.88, 50.00] | 58.33% [51.11, 65.56] |
 | Qwen3-8B (best-effort prompting = CoT)¹ | 65.57% [62.82, 68.32] | 62.89% [58.44, 67.33] | 73.33% [66.67, 79.44] |
 | **Frontier (`anthropic/claude-haiku-4.5`, CoT)²** | **70.90% [68.23, 73.56]** | **68.89% [64.67, 73.12]** | **66.11% [59.44, 72.78]** |
-| SFT (QLoRA) — Phase 1 | — | — | — |
+| SFT (QLoRA) — Phase 1 (target: ≥69.07%, see `docs/phase1_gate.md`) | — | — | — |
 | GRPO (verifiable reward) — Phase 2 | — | — | — |
 
 ¹ CoT, not few-shot, is the locked best-effort-prompting arm: it beat
@@ -284,6 +293,8 @@ Tail: exp 5; power/greater absent. Phase 2 format-reward grammar = this set.
 | 2026-09-16 | Secret management | `OPENROUTER_API_KEY` in a local `.env` (gitignored), loaded via `python-dotenv` | Never commit API keys |
 | 2026-09-16 | Phase 0 gate evaluated | **FAIL** — frontier CoT beats Qwen CoT by +5.32 pts on finqa_test (McNemar p<0.0001, real but modest), short of the pre-registered ≥8-pt / non-overlapping-CI bar; frontier underperforms on SEC 2026 (not significant) | Gate criterion was pre-registered before any results existed, specifically to prevent post-hoc goal-moving; result stands as measured against `anthropic/claude-haiku-4.5` |
 | 2026-09-16 | **Phase 1 framing (resolved)** | **Proceed to SFT/GRPO with a revised, smaller target: close most of the +5.32pt (finqa_test) gap to near-frontier CoT prompting**, instead of (a) reframing around cost/latency, or (b) spending more to test a flagship-tier snapshot first | The measured gap is real (p<0.0001) and Qwen3-8B is already close enough that verifiable-reward RL/SFT is plausible to close most of it; a flagship-tier frontier ceiling remains untested and unclaimed — Phase 1 targets are set against the measured near-frontier gap, not an assumed larger one. Revisit and re-test against a flagship snapshot later if Phase 1 results warrant a stronger comparison |
+| 2026-09-22 | Phase 1 tracking | New W&B project **`opentune-phase1`**, kept separate from `opentune-phase0` | Phase 0's project stays frozen/historical; new SFT/GRPO run tags never mix into the closed baseline table, avoiding any ambiguity about which runs back which published number |
+| 2026-09-22 | **Phase 1 gate pre-registered** | SFT checkpoint must reach **≥69.07%** on finqa_test (≥+3.5pts over the 65.57% Qwen3-8B CoT baseline), **non-overlapping bootstrap 95% CIs**, i.e. closing **≥60%** of the measured 5.32pt gap to frontier CoT (70.90%). Full spec, methodology, and pre-committed decision branches (full pass / partial pass / fail) in `docs/phase1_gate.md` | Mirrors the Phase 0 discipline of locking a criterion before any results exist. 3.5pts is chosen deliberately below full gap closure — Phase 2 (GRPO) is expected to close the remainder, so Phase 1 isn't required to solve the whole gap alone |
 
 ## 6. Experiment Log
 
@@ -312,6 +323,7 @@ Negative results stay in. Every run: config, cost, result, verdict.
 | 2026-09-16 | Frontier CoT run — finqa_test | n=1,127, same config | $2.6540 (cumulative $3.9994) | 70.90% acc | Clean run; total frontier spend $4.00, within $3–6 target |
 | 2026-09-16 | Cross-model gate comparison | `scripts/compare_frontier.py --append-to docs/baselines.md`, paired bootstrap CI + exact McNemar, frontier vs. Qwen CoT, all 3 sets | $0 | finqa_test: +5.32pts, p<0.0001, CIs overlap. custom_eval: +6.00pts, p=0.0028, CIs overlap. sec_2026: −7.22pts, p=0.0919, CIs overlap | **Gate: FAIL**; **all baselines (base + frontier) published** to `docs/baselines.md` and `docs/gate_decision.md` |
 | 2026-09-16 | Phase 1 framing decision | Reviewed FAIL result and 3 options | $0 | Chose to proceed to SFT/GRPO with revised target (close most of the +5.32pt gap) over reframing to cost/latency or re-testing a flagship snapshot | Phase 0 closed; Phase 1 scoped |
+| 2026-09-22 | Phase 1 gate pre-registration | Target set before any SFT code/run exists: ≥69.07% finqa_test, non-overlapping CIs vs. 65.57% baseline | $0 | Full spec committed to `docs/phase1_gate.md`; decision branches (full/partial/fail pass) pre-committed | Kept — this is the gate SFT results will be judged against |
 
 ## 7. Failure Modes / Known Limitations
 
@@ -361,6 +373,7 @@ Negative results stay in. Every run: config, cost, result, verdict.
 - Prompt templates + verified exemplars: `src/opentune/prompts/` — 5 contract tests
 - Decontamination: `src/opentune/decontaminate.py`
 - Task spec: `docs/task-spec.md`
+- Phase 1 gate: `docs/phase1_gate.md` (pre-registered 2026-09-22, before any SFT run)
 - Data: `data/processed/finqa_{train,dev,test}.parquet`,
   `finqa_train_decontaminated.parquet`, `decontamination_report.json`
 - Eval sets: `data/eval/custom_eval.parquet` (n=450, seed 42),
@@ -376,6 +389,7 @@ Negative results stay in. Every run: config, cost, result, verdict.
   `docs/gate_decision.md` (standalone), plus appended section in
   `docs/baselines.md` (all results with bootstrap CIs now live in one file)
 - Run tracking: [W&B project `opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
+  (frozen), `opentune-phase1` (new, live — Phase 1 onward)
 - Weights + model cards: — (HF Hub, Phase 1+)
 - Reward function: `src/opentune/` (Phase 2)
 - Demo: — (pre-recorded video, Phase 4)
@@ -406,6 +420,7 @@ TODO — code license, synthetic-data provenance. Finalized before Phase 4.
 | 2026-09-16 | 0 | Frontier CoT run executed on all 3 eval sets (sec_2026, custom_eval, finqa_test); total spend $3.9994. |
 | 2026-09-16 | 0 | Cross-model gate comparison run and appended to `docs/baselines.md`: Phase 0 gate result = FAIL — finqa_test delta +5.32pts (p<0.0001, CIs overlap), below the pre-registered ≥8pt bar. |
 | 2026-09-16 | 0→1 | **Phase 0 closed.** Decision: proceed to Phase 1 (SFT/GRPO) with revised target — close most of the +5.32pt gap to near-frontier CoT prompting, rather than beat it by 8pts or reframe to cost/latency. |
+| 2026-09-22 | 1 | **Phase 1 gate pre-registered** (`docs/phase1_gate.md`) before any SFT training code or checkpoint exists: SFT must reach ≥69.07% on finqa_test (≥+3.5pts vs. Qwen3-8B CoT), non-overlapping bootstrap 95% CIs, closing ≥60% of the 5.32pt gap to frontier CoT. New W&B project `opentune-phase1` created for Phase 1 tracking, kept separate from the frozen `opentune-phase0` table. |
 
 ---
 
@@ -416,3 +431,4 @@ training and evaluation runs on Kaggle / Colab free tier; RunPod A100 (~$1–1.5
 as paid fallback. Budget target: ≤ $30 total. Budget spent to date: **$3.9994**
 (frontier baseline via OpenRouter; base baselines ran on free-tier GPU at $0
 API cost).
+</content>
