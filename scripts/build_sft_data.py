@@ -185,6 +185,7 @@ def run_worker(args) -> None:
     return model, tokenizer
 
   df = pd.read_parquet(TRAIN_PATH)
+  df = df.sample(frac=1, random_state=42).reset_index(drop=True)
   if args.num_shards > 1:
     df = df.iloc[args.shard_id::args.num_shards].reset_index(drop=True)
   if args.limit:
