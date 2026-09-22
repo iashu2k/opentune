@@ -2,29 +2,29 @@
 with deterministic template-trace fallback for questions with 0 correct
 samples in k attempts.
 
-v6: fixed k=1 decoding strategy. A k=1 dry run at temperature=0.7 sampling
-returned only 28% star-acceptance (14/50) vs. the baseline's 65.57% CoT
-accuracy -- an n=50 result far outside noise. Root cause: at k=1 there is
-no "best of k" to offset a single stochastic sample's lower per-draw hit
-rate relative to greedy decoding. Fix: k=1 now uses greedy decoding
-(do_sample=False), matching the baseline's own decode strategy, since
-there is no diversity benefit to buy with sampling noise when only one
-draw is taken. Sampling (do_sample=True, temperature=args.temperature) is
-now only used when k>1, where the best-of-k mechanism can actually recoup
-sampling's higher per-draw variance.
-
-v5 (retained): fixed is_valid_program() regex-parsing bug (naive comma
-split broke on multi-arg operators); added oom tracking + GPU diagnostics.
-
-v4 (retained): self-orchestrating -- single invocation with no --shard-id
-detects all visible GPUs via nvidia-smi, launches one worker SUBPROCESS
-per GPU (real OS process, own CUDA context -- avoids the Unsloth
-multi-GPU attention-mask bug from the Phase 0 handover), waits, merges.
+v7: restored batched generation for k=1, matching run_baselines.py's proven
+config exactly (batch_size=8, left-padded, greedy). Diagnostic history:
+  - k=4 sampled: 52% star-accept (after is_valid_program fix) -- below the
+    65.57% baseline, plausible given best-of-4 vs single greedy comparison.
+  - k=1 sampled (t=0.7): 28% -- much lower, blamed on sampling noise vs.
+    greedy at the time.
+  - k=1 greedy, same head-of-file 50 rows: 30% -- barely moved. Ruled out
+    sampling-vs-greedy as the dominant cause.
+  - k=1 greedy, SHUFFLED random 50 rows: 24% -- ruled out head-of-file bias
+    in the test rows too.
+  - Remaining architectural difference vs. the baseline run that produced
+    65.57%: this script has generated ONE question at a time (batch=1)
+    since the OOM fix several iterations back. run_baselines.py always
+    batches 8 questions with left-padding. At k=1 there is no multiplicative
+    OOM risk (batch_size * k = 8 * 1 = 8, the baseline's own proven-safe
+    config) -- so batching was never actually necessary to avoid here, and
+    if Unsloth's generate path behaves differently for batch=1 vs padded
+    batch=8, that would explain the persistent gap this v7 is testing for.
 
 Usage:
-    uv run python scripts/build_sft_data.py --k 1                  # greedy, single-shot (recommended default)
-    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7 # sampled rejection sampling
-    uv run python scripts/build_sft_data.py --k 1 --limit 25        # dry run
+    uv run python scripts/build_sft_data.py --k 1                    # batched greedy (recommended)
+    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7   # per-row sampled rejection sampling
+    uv run python scripts/build_sft_data.py --k 1 --limit 50
     uv run python scripts/build_sft_data.py --merge-only
 """
 from __future__ import annotations
@@ -168,6 +168,21 @@ def merge_shards() -> dict:
   return stats
 
 
+def _accept_or_fallback(cand_texts, row, score_fn):
+  accepted = None
+  n_rejected = 0
+  for cand in cand_texts:
+    r = score_fn(cand, str(row["gold"]))
+    if not (r.correct and r.extraction.status.value == "ok"):
+      continue
+    if not (is_clean(cand) and is_valid_program(cand)):
+      n_rejected += 1
+      continue
+    accepted = trim_after_answer(cand)
+    break
+  return accepted, n_rejected
+
+
 def run_worker(args) -> None:
   import torch
   from opentune.prompts.templates import render_prompt
@@ -185,7 +200,8 @@ def run_worker(args) -> None:
     return model, tokenizer
 
   df = pd.read_parquet(TRAIN_PATH)
-  df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+  df = df.sample(frac=1, random_state=42).reset_index(
+    drop=True)  # shuffle, fixed seed
   if args.num_shards > 1:
     df = df.iloc[args.shard_id::args.num_shards].reset_index(drop=True)
   if args.limit:
@@ -206,11 +222,16 @@ def run_worker(args) -> None:
   model, tokenizer = load_model(args.model)
 
   do_sample = args.k > 1
+  # k=1 (greedy): batch like run_baselines.py; k>1 (sampled): per-row (avoids batch*k OOM)
+  use_batching = not do_sample
+  batch_size = args.batch_size if use_batching else 1
+
   print(f"[shard {args.shard_id}] CUDA_VISIBLE_DEVICES="
         f"{os.environ.get('CUDA_VISIBLE_DEVICES')} "
         f"torch sees {torch.cuda.device_count()} device(s), "
         f"using: {torch.cuda.get_device_name(0)}, "
-        f"decode: {'sampled t=' + str(args.temperature) if do_sample else 'greedy'}, k={args.k}")
+        f"decode: {'sampled t=' + str(args.temperature) if do_sample else 'greedy'}, "
+        f"k={args.k}, batch_size={batch_size}")
 
   source_stat = collections.Counter()
   degenerate_rejected = 0
@@ -218,52 +239,58 @@ def run_worker(args) -> None:
   rows = list(todo.iterrows())
 
   with open(out_jsonl, "a") as f:
-    for n, (_, row) in enumerate(rows, 1):
-      prompt = render_prompt(ARM, row["question"], row["context"])
-      inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-      oom_this_row = False
+    for i in range(0, len(rows), batch_size):
+      batch = rows[i: i + batch_size]
+      prompts = [render_prompt(ARM, r["question"], r["context"])
+                 for _, r in batch]
 
-      gen_kwargs = dict(
-          max_new_tokens=MAX_NEW_TOKENS, do_sample=do_sample,
-          num_return_sequences=args.k, stop_strings=STOP_STRINGS,
-          tokenizer=tokenizer, pad_token_id=tokenizer.pad_token_id,
-      )
-      if do_sample:
-        gen_kwargs["temperature"] = args.temperature
-
+      oom_this_batch = False
       try:
-        out = model.generate(**inputs, **gen_kwargs)
-        new = out[:, inputs["input_ids"].shape[1]:]
-        candidates = tokenizer.batch_decode(new, skip_special_tokens=True)
+        if use_batching:
+          inputs = tokenizer(prompts, return_tensors="pt",
+                             padding=True).to(model.device)
+          out = model.generate(
+              **inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=False,
+              stop_strings=STOP_STRINGS, tokenizer=tokenizer,
+              pad_token_id=tokenizer.pad_token_id,
+          )
+          new = out[:, inputs["input_ids"].shape[1]:]
+          decoded = tokenizer.batch_decode(new, skip_special_tokens=True)
+          # k=1 -> one candidate list per row
+          per_row_candidates = [[d] for d in decoded]
+        else:
+          inputs = tokenizer(prompts[0], return_tensors="pt").to(model.device)
+          out = model.generate(
+              **inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=True,
+              temperature=args.temperature, num_return_sequences=args.k,
+              stop_strings=STOP_STRINGS, tokenizer=tokenizer,
+              pad_token_id=tokenizer.pad_token_id,
+          )
+          new = out[:, inputs["input_ids"].shape[1]:]
+          per_row_candidates = [tokenizer.batch_decode(
+            new, skip_special_tokens=True)]
       except torch.OutOfMemoryError:
         torch.cuda.empty_cache()
         gc.collect()
-        candidates = []
-        oom_count += 1
-        oom_this_row = True
-        print(f"  [{n}] OOM on row {row['id']} -- falling back to template")
+        per_row_candidates = [[] for _ in batch]
+        oom_count += len(batch)
+        oom_this_batch = True
+        print(f"  [{i + len(batch)}] OOM on batch starting row "
+              f"{batch[0][1]['id']} -- falling back to template for {len(batch)} row(s)")
 
-      accepted = None
-      for cand in candidates:
-        r = score(cand, str(row["gold"]))
-        if not (r.correct and r.extraction.status.value == "ok"):
-          continue
-        if not (is_clean(cand) and is_valid_program(cand)):
-          degenerate_rejected += 1
-          continue
-        accepted = trim_after_answer(cand)
-        break
+      for (_, row), candidates in zip(batch, per_row_candidates):
+        accepted, n_rej = _accept_or_fallback(candidates, row, score)
+        degenerate_rejected += n_rej
+        source = "star" if accepted is not None else "template_fallback"
+        if accepted is None:
+          accepted = template_trace(row["program"], row["gold"])
+        source_stat[source] += 1
 
-      source = "star" if accepted is not None else "template_fallback"
-      if accepted is None:
-        accepted = template_trace(row["program"], row["gold"])
-      source_stat[source] += 1
-
-      f.write(json.dumps({
-          "id": row["id"], "prompt": prompt, "completion": accepted,
-          "source": source, "gold": str(row["gold"]), "program": row["program"],
-          "ts": time.time(), "oom": oom_this_row,
-      }) + "\n")
+        f.write(json.dumps({
+            "id": row["id"], "prompt": render_prompt(ARM, row["question"], row["context"]),
+            "completion": accepted, "source": source, "gold": str(row["gold"]),
+            "program": row["program"], "ts": time.time(), "oom": oom_this_batch,
+        }) + "\n")
       f.flush()
 
       del inputs
@@ -271,10 +298,11 @@ def run_worker(args) -> None:
         del out
       torch.cuda.empty_cache()
 
-      if n % args.log_every == 0 or n == len(rows):
-        print(f"  [{n}/{len(rows)}] star={source_stat['star']} "
+      n_done = min(i + batch_size, len(rows))
+      if n_done % (args.log_every) < batch_size or n_done == len(rows):
+        print(f"  [{n_done}/{len(rows)}] star={source_stat['star']} "
               f"fallback={source_stat['template_fallback']} "
-              f"degenerate_rejected={degenerate_rejected} oom={oom_count}")
+              f"degenerate_rejected={degenerate_rejected} oom_rows={oom_count}")
 
   print(f"shard {args.shard_id} done: {dict(source_stat)} oom_count={oom_count}")
 
@@ -298,6 +326,7 @@ def run_orchestrator(args) -> None:
         "--shard-id", str(shard_id), "--num-shards", str(num_shards),
         "--k", str(args.k), "--temperature", str(args.temperature),
         "--model", args.model, "--log-every", str(args.log_every),
+        "--batch-size", str(args.batch_size),
     ]
     if args.limit:
       cmd += ["--limit", str(args.limit)]
@@ -348,6 +377,7 @@ def main() -> None:
   ap.add_argument("--model", default="Qwen/Qwen3-8B")
   ap.add_argument("--k", type=int, default=1)
   ap.add_argument("--temperature", type=float, default=0.7)
+  ap.add_argument("--batch-size", type=int, default=8)
   ap.add_argument("--limit", type=int, default=None)
   ap.add_argument("--log-every", type=int, default=10)
   ap.add_argument("--num-shards", type=int, default=None)
