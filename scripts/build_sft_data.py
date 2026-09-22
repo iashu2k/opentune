@@ -2,29 +2,39 @@
 with deterministic template-trace fallback for questions with 0 correct
 samples in k attempts.
 
-v7: restored batched generation for k=1, matching run_baselines.py's proven
-config exactly (batch_size=8, left-padded, greedy). Diagnostic history:
-  - k=4 sampled: 52% star-accept (after is_valid_program fix) -- below the
-    65.57% baseline, plausible given best-of-4 vs single greedy comparison.
-  - k=1 sampled (t=0.7): 28% -- much lower, blamed on sampling noise vs.
-    greedy at the time.
-  - k=1 greedy, same head-of-file 50 rows: 30% -- barely moved. Ruled out
-    sampling-vs-greedy as the dominant cause.
-  - k=1 greedy, SHUFFLED random 50 rows: 24% -- ruled out head-of-file bias
-    in the test rows too.
-  - Remaining architectural difference vs. the baseline run that produced
-    65.57%: this script has generated ONE question at a time (batch=1)
-    since the OOM fix several iterations back. run_baselines.py always
-    batches 8 questions with left-padding. At k=1 there is no multiplicative
-    OOM risk (batch_size * k = 8 * 1 = 8, the baseline's own proven-safe
-    config) -- so batching was never actually necessary to avoid here, and
-    if Unsloth's generate path behaves differently for batch=1 vs padded
-    batch=8, that would explain the persistent gap this v7 is testing for.
+v8: added --data-path override for diagnostics. Star-acceptance on the
+decontaminated train set has stayed stubbornly low (14-30%) across every
+fix tried so far (sampled->greedy, head-of-file bias->shuffled,
+batch=1->batch=8 matching run_baselines.py exactly) -- none moved the
+needle meaningfully. This version lets the exact same harness be pointed
+at finqa_test.parquet, where Phase 0 measured a known 65.57% accuracy, as
+a sanity check: if this script reproduces ~65% on test data, the harness
+is fine and the low train numbers are a real property of the decontaminated
+train distribution (plausible cause: decontamination removes rows with
+high 8-gram overlap vs dev+test, which may disproportionately strip
+formulaic/easier repeated-phrasing questions, leaving a genuinely harder
+residual set). If it does NOT reproduce ~65% on test data, there's a real
+bug in this harness independent of everything tested so far.
+
+Note: finqa_test.parquet may not have a `program` column (FinQA test sets
+often withhold gold programs) -- template_trace() fallback will KeyError
+on that column if missing. This only matters for the sanity check itself
+(not for real training-data builds, which always use the train set, which
+does have `program`). Check columns before running against test data.
+
+v7 (retained): batched generation for k=1 (batch_size=8, greedy, matching
+run_baselines.py's proven config); per-row sampling still used for k>1
+(avoids batch_size*k OOM).
+v6 (retained): k=1 defaults to greedy decoding, not sampled.
+v5 (retained): fixed is_valid_program() regex-parsing bug; oom tracking.
+v4 (retained): self-orchestrating multi-GPU via subprocess, one process
+per GPU, avoiding the Unsloth multi-GPU attention-mask bug.
 
 Usage:
-    uv run python scripts/build_sft_data.py --k 1                    # batched greedy (recommended)
-    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7   # per-row sampled rejection sampling
-    uv run python scripts/build_sft_data.py --k 1 --limit 50
+    uv run python scripts/build_sft_data.py --k 1                                    # real build, decontaminated train
+    uv run python scripts/build_sft_data.py --k 1 --limit 50 \\
+        --data-path data/processed/finqa_test.parquet                                # sanity check vs known 65.57%
+    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7                  # sampled rejection sampling
     uv run python scripts/build_sft_data.py --merge-only
 """
 from __future__ import annotations
@@ -45,7 +55,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 
-TRAIN_PATH = "data/processed/finqa_train_decontaminated.parquet"
+DEFAULT_TRAIN_PATH = "data/processed/finqa_train_decontaminated.parquet"
 RESULTS_DIR = Path("results/raw")
 OUT_PARQUET = Path("data/processed/sft_train_v1.parquet")
 STATS_PATH = Path("docs/sft_data_card_stats.json")
@@ -91,8 +101,10 @@ def trim_after_answer(text: str) -> str:
   return text[: end if end != -1 else len(text)].rstrip()
 
 
-def template_trace(program: str, gold: str) -> str:
-  steps = re.findall(r"([a-z_]+)\([^)]*\)", program)
+def template_trace(program, gold: str) -> str:
+  if program is None or (isinstance(program, float)):
+    return f"ANSWER: {gold}"
+  steps = re.findall(r"([a-z_]+)\([^)]*\)", str(program))
   verb = {
       "divide": "divide the values", "subtract": "subtract the values",
       "add": "add the values", "multiply": "multiply the values",
@@ -100,14 +112,18 @@ def template_trace(program: str, gold: str) -> str:
       "table_max": "take the table maximum", "table_min": "take the table minimum",
       "table_sum": "sum the table values", "exp": "apply the exponent",
   }
+  if not steps:
+    return f"ANSWER: {gold}"
   reasoning = "Following the program, I " + "; then I ".join(
       verb.get(s, s) for s in steps
   ) + "."
   return f"{reasoning}\nProgram: {program}\nANSWER: {gold}"
 
 
-def op_counts(program: str) -> collections.Counter:
-  return collections.Counter(OP_RE.findall(program))
+def op_counts(program) -> collections.Counter:
+  if program is None or (isinstance(program, float)):
+    return collections.Counter()
+  return collections.Counter(OP_RE.findall(str(program)))
 
 
 def completed_ids(path: Path) -> set[str]:
@@ -145,7 +161,7 @@ def merge_shards() -> dict:
   fallback_n = int((out_df["source"] == "template_fallback").sum())
   oom_n = int(out_df["oom"].sum()) if "oom" in out_df.columns else None
   op_stat = collections.Counter()
-  for prog in out_df["program"]:
+  for prog in out_df.get("program", []):
     op_stat.update(op_counts(prog))
 
   ts_span = None
@@ -199,7 +215,12 @@ def run_worker(args) -> None:
       tokenizer.pad_token = tokenizer.eos_token
     return model, tokenizer
 
-  df = pd.read_parquet(TRAIN_PATH)
+  df = pd.read_parquet(args.data_path)
+  if "program" not in df.columns:
+    df["program"] = None
+    print(f"[shard {args.shard_id}] WARNING: '{args.data_path}' has no "
+          f"'program' column -- fallback traces will be answer-only "
+          f"(fine for the finqa_test sanity check, not for real builds).")
   df = df.sample(frac=1, random_state=42).reset_index(
     drop=True)  # shuffle, fixed seed
   if args.num_shards > 1:
@@ -213,8 +234,8 @@ def run_worker(args) -> None:
 
   done = completed_ids(out_jsonl)
   todo = df[~df["id"].isin(done)]
-  print(
-    f"shard {args.shard_id}/{args.num_shards}: {len(done)} done, {len(todo)} to go")
+  print(f"shard {args.shard_id}/{args.num_shards}: {len(done)} done, {len(todo)} to go "
+        f"(data: {args.data_path})")
   if not len(todo):
     print("shard already complete")
     return
@@ -222,7 +243,6 @@ def run_worker(args) -> None:
   model, tokenizer = load_model(args.model)
 
   do_sample = args.k > 1
-  # k=1 (greedy): batch like run_baselines.py; k>1 (sampled): per-row (avoids batch*k OOM)
   use_batching = not do_sample
   batch_size = args.batch_size if use_batching else 1
 
@@ -231,7 +251,7 @@ def run_worker(args) -> None:
         f"torch sees {torch.cuda.device_count()} device(s), "
         f"using: {torch.cuda.get_device_name(0)}, "
         f"decode: {'sampled t=' + str(args.temperature) if do_sample else 'greedy'}, "
-        f"k={args.k}, batch_size={batch_size}")
+        f"k={args.k}, batch_size={batch_size}, data={args.data_path}")
 
   source_stat = collections.Counter()
   degenerate_rejected = 0
@@ -256,7 +276,6 @@ def run_worker(args) -> None:
           )
           new = out[:, inputs["input_ids"].shape[1]:]
           decoded = tokenizer.batch_decode(new, skip_special_tokens=True)
-          # k=1 -> one candidate list per row
           per_row_candidates = [[d] for d in decoded]
         else:
           inputs = tokenizer(prompts[0], return_tensors="pt").to(model.device)
@@ -283,13 +302,13 @@ def run_worker(args) -> None:
         degenerate_rejected += n_rej
         source = "star" if accepted is not None else "template_fallback"
         if accepted is None:
-          accepted = template_trace(row["program"], row["gold"])
+          accepted = template_trace(row.get("program"), row["gold"])
         source_stat[source] += 1
 
         f.write(json.dumps({
             "id": row["id"], "prompt": render_prompt(ARM, row["question"], row["context"]),
             "completion": accepted, "source": source, "gold": str(row["gold"]),
-            "program": row["program"], "ts": time.time(), "oom": oom_this_batch,
+            "program": row.get("program"), "ts": time.time(), "oom": oom_this_batch,
         }) + "\n")
       f.flush()
 
@@ -327,6 +346,7 @@ def run_orchestrator(args) -> None:
         "--k", str(args.k), "--temperature", str(args.temperature),
         "--model", args.model, "--log-every", str(args.log_every),
         "--batch-size", str(args.batch_size),
+        "--data-path", args.data_path,
     ]
     if args.limit:
       cmd += ["--limit", str(args.limit)]
@@ -356,7 +376,7 @@ def _finalize_single_shard() -> None:
   star_n = int((out_df["source"] == "star").sum())
   oom_n = int(out_df["oom"].sum()) if "oom" in out_df.columns else None
   op_stat = collections.Counter()
-  for prog in out_df["program"]:
+  for prog in out_df.get("program", []):
     op_stat.update(op_counts(prog))
   ts_span = float(out_df["ts"].max() - out_df["ts"].min()
                   ) if "ts" in out_df.columns and total else None
@@ -382,6 +402,7 @@ def main() -> None:
   ap.add_argument("--log-every", type=int, default=10)
   ap.add_argument("--num-shards", type=int, default=None)
   ap.add_argument("--shard-id", type=int, default=None)
+  ap.add_argument("--data-path", default=DEFAULT_TRAIN_PATH)
   ap.add_argument("--merge-only", action="store_true")
   args = ap.parse_args()
 
