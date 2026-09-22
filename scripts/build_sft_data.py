@@ -60,7 +60,7 @@ RESULTS_DIR = Path("results/raw")
 OUT_PARQUET = Path("data/processed/sft_train_v1.parquet")
 STATS_PATH = Path("docs/sft_data_card_stats.json")
 MAX_NEW_TOKENS = 640
-STOP_STRINGS = ["\n### ", "\n\nANSWER:", "\nOkay,"]
+STOP_STRINGS = ["\n### ", "\nOkay,"]
 ARM = "cot"
 
 OP_RE = re.compile(r"([a-z_]+)\(")
