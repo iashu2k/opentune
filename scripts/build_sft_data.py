@@ -2,26 +2,38 @@
 with deterministic template-trace fallback for questions with 0 correct
 samples in k attempts.
 
-v4: self-orchestrating. A single invocation with no --shard-id detects all
-visible GPUs, launches one worker SUBPROCESS per GPU (each with its own
-CUDA_VISIBLE_DEVICES set before that subprocess's Python interpreter even
-starts -- this is a real OS-level subprocess, not a fork or thread, so each
-gets a clean CUDA context on exactly one GPU), waits for all of them, then
-merges automatically. This sidesteps the Unsloth multi-GPU attention-mask
-bug (Phase 0 handover) entirely, since no single process ever sees >1 GPU.
+v5 changes:
+  - FIXED is_valid_program(): v4's naive text.split(",") broke on every
+    multi-arg operator (e.g. "divide(14001, 26302)" has a comma INSIDE its
+    own args), causing near-100% false rejection of correct, well-formed
+    completions -- confirmed via shard0.log/shard1.log showing 0/100 star
+    with degenerate_rejected counts near the total correct-candidate count.
+    Fixed by extracting op(...) chunks via regex findall (respects
+    parens) instead of splitting the whole string on every comma.
+  - Added an explicit oom_count counter (previously OOM fallbacks were
+    indistinguishable from "no correct sample in k" fallbacks in the
+    stats -- this cost real diagnostic time working out what broke).
+  - Added a startup diagnostic print per shard (visible device, GPU name)
+    to make GPU-isolation bugs visible immediately in the logs instead of
+    requiring manual inspection.
+
+v4 changes (retained): self-orchestrating -- a single invocation with no
+  --shard-id detects all visible GPUs via nvidia-smi, launches one worker
+  SUBPROCESS per GPU (real OS process, own CUDA context, avoids the
+  Unsloth multi-GPU attention-mask bug from the Phase 0 handover since no
+  single process ever sees >1 GPU), waits for all, merges automatically.
 
 Usage (single command, Kaggle T4 x2 or any N-GPU box):
     uv run python scripts/build_sft_data.py --k 4 --temperature 0.7
-    uv run python scripts/build_sft_data.py --k 4 --limit 50   # dry run, auto-sharded
+    uv run python scripts/build_sft_data.py --k 4 --limit 25   # dry run (25/shard = 50 total on 2 GPUs)
 
-Force a specific shard count (e.g. to under-subscribe GPUs):
+Force a specific shard count:
     uv run python scripts/build_sft_data.py --k 4 --num-shards 1
 
-Re-merge without re-running generation (e.g. after a manual/partial run):
+Re-merge without re-running generation:
     uv run python scripts/build_sft_data.py --merge-only
 
-Internal worker mode (called automatically by the orchestrator; you normally
-never invoke this yourself):
+Internal worker mode (invoked automatically by the orchestrator):
     uv run python scripts/build_sft_data.py --shard-id 1 --num-shards 2 ...
 """
 from __future__ import annotations
@@ -72,13 +84,20 @@ def is_clean(text: str) -> bool:
 
 
 def is_valid_program(text: str) -> bool:
+  """Reject malformed Program: syntax or duplicate headers.
+  Extracts op(...) chunks via regex findall (respects parens, so commas
+  INSIDE an operator's own args don't break parsing) instead of naively
+  splitting the whole string on every comma -- that bug rejected ~all
+  multi-arg operators (i.e. almost every real completion) in v4."""
   if text.count("Program:") != 1:
     return False
   m = re.search(r"Program:\s*(.+)", text)
   if not m:
     return False
-  steps = [s.strip() for s in m.group(1).split(",")]
-  return bool(steps) and all(re.fullmatch(r"[a-z_]+\([^()]*\)", s) for s in steps)
+  program_str = m.group(1).strip()
+  steps = re.findall(r"[a-z_]+\([^()]*\)", program_str)
+  reconstructed = ", ".join(steps)
+  return bool(steps) and reconstructed == program_str
 
 
 def trim_after_answer(text: str) -> str:
@@ -141,6 +160,7 @@ def merge_shards() -> dict:
   total = len(out_df)
   star_n = int((out_df["source"] == "star").sum())
   fallback_n = int((out_df["source"] == "template_fallback").sum())
+  oom_n = int(out_df["oom"].sum()) if "oom" in out_df.columns else None
   op_stat = collections.Counter()
   for prog in out_df["program"]:
     op_stat.update(op_counts(prog))
@@ -154,6 +174,7 @@ def merge_shards() -> dict:
       "star_accepted": star_n,
       "template_fallback": fallback_n,
       "star_acceptance_rate": round(star_n / total, 4) if total else None,
+      "oom_fallbacks": oom_n,
       "n_shards_merged": len(shard_files),
       "wall_clock_span_s_across_all_shards": ts_span,
       "operator_counts_in_source_rows": dict(op_stat),
@@ -165,9 +186,9 @@ def merge_shards() -> dict:
 
 
 def run_worker(args) -> None:
-  """Actual generation loop -- runs inside one shard (one GPU, one process).
-  Heavy imports deferred to here so the orchestrator process never touches
-  torch/unsloth."""
+  """Actual generation loop -- runs inside one shard (one GPU, one
+  process). Heavy imports deferred to here so the orchestrator process
+  never touches torch/unsloth."""
   import torch
   from opentune.prompts.templates import render_prompt
   from opentune.extract import score
@@ -203,14 +224,22 @@ def run_worker(args) -> None:
 
   model, tokenizer = load_model(args.model)
 
+  print(f"[shard {args.shard_id}] CUDA_VISIBLE_DEVICES="
+        f"{os.environ.get('CUDA_VISIBLE_DEVICES')} "
+        f"torch sees {torch.cuda.device_count()} device(s), "
+        f"using: {torch.cuda.get_device_name(0)}, "
+        f"mem allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f}GB")
+
   source_stat = collections.Counter()
   degenerate_rejected = 0
+  oom_count = 0
   rows = list(todo.iterrows())
 
   with open(out_jsonl, "a") as f:
     for n, (_, row) in enumerate(rows, 1):
       prompt = render_prompt(ARM, row["question"], row["context"])
       inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+      oom_this_row = False
 
       try:
         out = model.generate(
@@ -225,6 +254,8 @@ def run_worker(args) -> None:
         torch.cuda.empty_cache()
         gc.collect()
         candidates = []
+        oom_count += 1
+        oom_this_row = True
         print(f"  [{n}] OOM on row {row['id']} -- falling back to template")
 
       accepted = None
@@ -246,7 +277,7 @@ def run_worker(args) -> None:
       f.write(json.dumps({
           "id": row["id"], "prompt": prompt, "completion": accepted,
           "source": source, "gold": str(row["gold"]), "program": row["program"],
-          "ts": time.time(),
+          "ts": time.time(), "oom": oom_this_row,
       }) + "\n")
       f.flush()
 
@@ -258,9 +289,9 @@ def run_worker(args) -> None:
       if n % args.log_every == 0 or n == len(rows):
         print(f"  [{n}/{len(rows)}] star={source_stat['star']} "
               f"fallback={source_stat['template_fallback']} "
-              f"degenerate_rejected={degenerate_rejected}")
+              f"degenerate_rejected={degenerate_rejected} oom={oom_count}")
 
-  print(f"shard {args.shard_id} done: {dict(source_stat)}")
+  print(f"shard {args.shard_id} done: {dict(source_stat)} oom_count={oom_count}")
 
 
 def run_orchestrator(args) -> None:
@@ -272,8 +303,6 @@ def run_orchestrator(args) -> None:
   if num_shards == 1:
     ns = argparse.Namespace(**vars(args), shard_id=0, num_shards=1)
     run_worker(ns)
-    # single-shard: file IS the trace log, no merge needed
-    merge_shards() if False else None
     _finalize_single_shard()
     return
 
@@ -305,7 +334,7 @@ def run_orchestrator(args) -> None:
 
 def _finalize_single_shard() -> None:
   """When num_shards==1, sft_build_trace_log.jsonl (no suffix) IS the
-  final trace log -- just materialize parquet + stats from it directly."""
+  final trace log -- materialize parquet + stats from it directly."""
   path = RESULTS_DIR / "sft_build_trace_log.jsonl"
   if not path.exists():
     print("no trace log found")
@@ -315,6 +344,7 @@ def _finalize_single_shard() -> None:
   out_df.to_parquet(OUT_PARQUET, index=False)
   total = len(out_df)
   star_n = int((out_df["source"] == "star").sum())
+  oom_n = int(out_df["oom"].sum()) if "oom" in out_df.columns else None
   op_stat = collections.Counter()
   for prog in out_df["program"]:
     op_stat.update(op_counts(prog))
@@ -324,6 +354,7 @@ def _finalize_single_shard() -> None:
       "total_rows": total, "star_accepted": star_n,
       "template_fallback": total - star_n,
       "star_acceptance_rate": round(star_n / total, 4) if total else None,
+      "oom_fallbacks": oom_n,
       "n_shards_merged": 1, "wall_clock_span_s_across_all_shards": ts_span,
       "operator_counts_in_source_rows": dict(op_stat),
   }

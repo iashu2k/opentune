@@ -3,7 +3,7 @@
 **Status:** PRE-REGISTERED — committed before any Phase 1 training data, training
 code, or SFT results existed.
 **Date written:** 2026-09-21
-**Commit:** 
+**Commit:** 4eea8333d9376c67b12ffccc1cf4c59026cbd80b
 **Baseline anchor:** (hash: 7e75a2dfb6ba2ba2ad23611cbfffa7863520d3e6) — all Phase 1 claims are
 measured against results reproducible from that tag.
 
@@ -58,7 +58,7 @@ estimate plus a CI that excludes zero — significance alone would pass a
 
 ## 5. Eval protocol (frozen for this phase)
 
-- Prompt arm: `zero_shot` via frozen `render_prompt(name, question, context)`
+- Prompt arm: `cot` via frozen `render_prompt(name, question, context)`
   (separate string args). Byte-identical context serialization to
   `run_baselines.py`.
 - Decoding: greedy, temperature 0. Same runner pattern as Phase 0; SFT
@@ -129,5 +129,5 @@ If the primary criterion fails after the iteration budget:
 
 Written and committed before any Phase 1 training artifact.
 - Date: 2026-09-21
-- Commit: FILL-IN
+- Commit: 4eea8333d9376c67b12ffccc1cf4c59026cbd80b
 - Author: iashu2k
