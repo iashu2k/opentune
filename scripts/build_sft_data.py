@@ -2,39 +2,30 @@
 with deterministic template-trace fallback for questions with 0 correct
 samples in k attempts.
 
-v5 changes:
-  - FIXED is_valid_program(): v4's naive text.split(",") broke on every
-    multi-arg operator (e.g. "divide(14001, 26302)" has a comma INSIDE its
-    own args), causing near-100% false rejection of correct, well-formed
-    completions -- confirmed via shard0.log/shard1.log showing 0/100 star
-    with degenerate_rejected counts near the total correct-candidate count.
-    Fixed by extracting op(...) chunks via regex findall (respects
-    parens) instead of splitting the whole string on every comma.
-  - Added an explicit oom_count counter (previously OOM fallbacks were
-    indistinguishable from "no correct sample in k" fallbacks in the
-    stats -- this cost real diagnostic time working out what broke).
-  - Added a startup diagnostic print per shard (visible device, GPU name)
-    to make GPU-isolation bugs visible immediately in the logs instead of
-    requiring manual inspection.
+v6: fixed k=1 decoding strategy. A k=1 dry run at temperature=0.7 sampling
+returned only 28% star-acceptance (14/50) vs. the baseline's 65.57% CoT
+accuracy -- an n=50 result far outside noise. Root cause: at k=1 there is
+no "best of k" to offset a single stochastic sample's lower per-draw hit
+rate relative to greedy decoding. Fix: k=1 now uses greedy decoding
+(do_sample=False), matching the baseline's own decode strategy, since
+there is no diversity benefit to buy with sampling noise when only one
+draw is taken. Sampling (do_sample=True, temperature=args.temperature) is
+now only used when k>1, where the best-of-k mechanism can actually recoup
+sampling's higher per-draw variance.
 
-v4 changes (retained): self-orchestrating -- a single invocation with no
-  --shard-id detects all visible GPUs via nvidia-smi, launches one worker
-  SUBPROCESS per GPU (real OS process, own CUDA context, avoids the
-  Unsloth multi-GPU attention-mask bug from the Phase 0 handover since no
-  single process ever sees >1 GPU), waits for all, merges automatically.
+v5 (retained): fixed is_valid_program() regex-parsing bug (naive comma
+split broke on multi-arg operators); added oom tracking + GPU diagnostics.
 
-Usage (single command, Kaggle T4 x2 or any N-GPU box):
-    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7
-    uv run python scripts/build_sft_data.py --k 4 --limit 25   # dry run (25/shard = 50 total on 2 GPUs)
+v4 (retained): self-orchestrating -- single invocation with no --shard-id
+detects all visible GPUs via nvidia-smi, launches one worker SUBPROCESS
+per GPU (real OS process, own CUDA context -- avoids the Unsloth
+multi-GPU attention-mask bug from the Phase 0 handover), waits, merges.
 
-Force a specific shard count:
-    uv run python scripts/build_sft_data.py --k 4 --num-shards 1
-
-Re-merge without re-running generation:
+Usage:
+    uv run python scripts/build_sft_data.py --k 1                  # greedy, single-shot (recommended default)
+    uv run python scripts/build_sft_data.py --k 4 --temperature 0.7 # sampled rejection sampling
+    uv run python scripts/build_sft_data.py --k 1 --limit 25        # dry run
     uv run python scripts/build_sft_data.py --merge-only
-
-Internal worker mode (invoked automatically by the orchestrator):
-    uv run python scripts/build_sft_data.py --shard-id 1 --num-shards 2 ...
 """
 from __future__ import annotations
 import pandas as pd
@@ -51,7 +42,6 @@ import gc
 import os
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-# worker default; orchestrator overrides per-child
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 
@@ -67,8 +57,6 @@ OP_RE = re.compile(r"([a-z_]+)\(")
 
 
 def detect_gpu_count() -> int:
-  """nvidia-smi, not torch -- avoids touching CUDA in the orchestrator
-  process before it decides how to split work across children."""
   try:
     out = subprocess.run(
         ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=10
@@ -84,11 +72,6 @@ def is_clean(text: str) -> bool:
 
 
 def is_valid_program(text: str) -> bool:
-  """Reject malformed Program: syntax or duplicate headers.
-  Extracts op(...) chunks via regex findall (respects parens, so commas
-  INSIDE an operator's own args don't break parsing) instead of naively
-  splitting the whole string on every comma -- that bug rejected ~all
-  multi-arg operators (i.e. almost every real completion) in v4."""
   if text.count("Program:") != 1:
     return False
   m = re.search(r"Program:\s*(.+)", text)
@@ -186,9 +169,6 @@ def merge_shards() -> dict:
 
 
 def run_worker(args) -> None:
-  """Actual generation loop -- runs inside one shard (one GPU, one
-  process). Heavy imports deferred to here so the orchestrator process
-  never touches torch/unsloth."""
   import torch
   from opentune.prompts.templates import render_prompt
   from opentune.extract import score
@@ -224,11 +204,12 @@ def run_worker(args) -> None:
 
   model, tokenizer = load_model(args.model)
 
+  do_sample = args.k > 1
   print(f"[shard {args.shard_id}] CUDA_VISIBLE_DEVICES="
         f"{os.environ.get('CUDA_VISIBLE_DEVICES')} "
         f"torch sees {torch.cuda.device_count()} device(s), "
         f"using: {torch.cuda.get_device_name(0)}, "
-        f"mem allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f}GB")
+        f"decode: {'sampled t=' + str(args.temperature) if do_sample else 'greedy'}, k={args.k}")
 
   source_stat = collections.Counter()
   degenerate_rejected = 0
@@ -241,13 +222,16 @@ def run_worker(args) -> None:
       inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
       oom_this_row = False
 
+      gen_kwargs = dict(
+          max_new_tokens=MAX_NEW_TOKENS, do_sample=do_sample,
+          num_return_sequences=args.k, stop_strings=STOP_STRINGS,
+          tokenizer=tokenizer, pad_token_id=tokenizer.pad_token_id,
+      )
+      if do_sample:
+        gen_kwargs["temperature"] = args.temperature
+
       try:
-        out = model.generate(
-            **inputs, max_new_tokens=MAX_NEW_TOKENS, do_sample=True,
-            temperature=args.temperature, num_return_sequences=args.k,
-            stop_strings=STOP_STRINGS, tokenizer=tokenizer,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        out = model.generate(**inputs, **gen_kwargs)
         new = out[:, inputs["input_ids"].shape[1]:]
         candidates = tokenizer.batch_decode(new, skip_special_tokens=True)
       except torch.OutOfMemoryError:
@@ -295,8 +279,6 @@ def run_worker(args) -> None:
 
 
 def run_orchestrator(args) -> None:
-  """No --shard-id given: detect GPUs, launch one worker subprocess per
-  GPU (or per --num-shards if explicitly forced), wait, merge."""
   num_shards = args.num_shards or detect_gpu_count()
   print(f"orchestrator: launching {num_shards} shard(s)")
 
@@ -333,8 +315,6 @@ def run_orchestrator(args) -> None:
 
 
 def _finalize_single_shard() -> None:
-  """When num_shards==1, sft_build_trace_log.jsonl (no suffix) IS the
-  final trace log -- materialize parquet + stats from it directly."""
   path = RESULTS_DIR / "sft_build_trace_log.jsonl"
   if not path.exists():
     print("no trace log found")
@@ -365,7 +345,7 @@ def _finalize_single_shard() -> None:
 def main() -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("--model", default="Qwen/Qwen3-8B")
-  ap.add_argument("--k", type=int, default=4)
+  ap.add_argument("--k", type=int, default=1)
   ap.add_argument("--temperature", type=float, default=0.7)
   ap.add_argument("--limit", type=int, default=None)
   ap.add_argument("--log-every", type=int, default=10)
@@ -379,12 +359,10 @@ def main() -> None:
     return
 
   if args.shard_id is not None:
-    # internal worker invocation (spawned by the orchestrator, or manual)
     args.num_shards = args.num_shards or 1
     run_worker(args)
     return
 
-  # top-level invocation: orchestrate
   run_orchestrator(args)
 
 
