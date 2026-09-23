@@ -324,6 +324,8 @@ Negative results stay in. Every run: config, cost, result, verdict.
 | 2026-09-16 | Cross-model gate comparison | `scripts/compare_frontier.py --append-to docs/baselines.md`, paired bootstrap CI + exact McNemar, frontier vs. Qwen CoT, all 3 sets | $0 | finqa_test: +5.32pts, p<0.0001, CIs overlap. custom_eval: +6.00pts, p=0.0028, CIs overlap. sec_2026: −7.22pts, p=0.0919, CIs overlap | **Gate: FAIL**; **all baselines (base + frontier) published** to `docs/baselines.md` and `docs/gate_decision.md` |
 | 2026-09-16 | Phase 1 framing decision | Reviewed FAIL result and 3 options | $0 | Chose to proceed to SFT/GRPO with revised target (close most of the +5.32pt gap) over reframing to cost/latency or re-testing a flagship snapshot | Phase 0 closed; Phase 1 scoped |
 | 2026-09-22 | Phase 1 gate pre-registration | Target set before any SFT code/run exists: ≥69.07% finqa_test, non-overlapping CIs vs. 65.57% baseline | $0 | Full spec committed to `docs/phase1_gate.md`; decision branches (full/partial/fail pass) pre-committed | Kept — this is the gate SFT results will be judged against |
+| 2026-09-22 | SFT dataset build v1 | Excludes table_* ops; program re-execution gate | $0 | 5,828 input → 195 excluded (table ops) → 5,633 kept; 0 parse errors, 0 gold mismatches (100% program-integrity rate) | Kept — data/processed/sft_train_v1.jsonl |
+
 
 ## 7. Failure Modes / Known Limitations
 
