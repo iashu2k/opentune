@@ -11,19 +11,26 @@ pre-registered ≥8pt / non-overlapping-CI bar (see §1/§5) — but the gap is
 real (McNemar p<0.0001) and modest (+5.32pts on finqa_test). **Decision:
 proceed to Phase 1 (SFT/GRPO) with a revised target** — close most of the
 measured gap to near-frontier prompting, rather than the original
-"beat-frontier-by-8pts" framing. **Phase 1 status (2026-09-22): success
-criterion pre-registered** (`docs/phase1_gate.md` — SFT must reach ≥69.07%
-on finqa_test, i.e. ≥+3.5pts over the 65.57% Qwen3-8B CoT baseline, with
-non-overlapping bootstrap 95% CIs, closing ≥60% of the measured 5.32pt gap
-to frontier CoT) **before any SFT training code or checkpoint exists.**
-Next: build the SFT training-data pipeline from the decontaminated FinQA
-train set.
+"beat-frontier-by-8pts" framing.
+
+**Phase 1 status (2026-09-23):** success criterion pre-registered
+(`docs/phase1_gate.md` — SFT must reach ≥69.07% on finqa_test, i.e. ≥+3.5pts
+over the 65.57% Qwen3-8B CoT baseline, with non-overlapping bootstrap 95%
+CIs, closing ≥60% of the measured 5.32pt gap to frontier CoT) **before any
+SFT training code or checkpoint existed.** Since then: the SFT training-data
+pipeline is built (5,633 rows kept, 100% program-integrity rate), a QLoRA
+run has completed on the full train set, and the resulting adapter is
+published to HF Hub at
+[`iashu2k/opentune-qwen3-8b-sft`](https://huggingface.co/iashu2k/opentune-qwen3-8b-sft).
+**Next: evaluate this checkpoint against the frozen finqa_test/custom_eval/
+sec_2026 sets to check the pre-registered gate** — no accuracy numbers exist
+yet, only training loss (see §6).
 
 Runs are tracked live in two W&B projects — kept separate so new Phase 1
 tags never get mixed into the frozen Phase 0 table:
 [`opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
 (frozen — baseline matrix, frontier CoT, gate comparison) and
-`opentune-phase1` (new — SFT/QLoRA runs onward; filter by `arm`/`eval_set`/
+`opentune-phase1` (live — SFT/QLoRA runs onward; filter by `arm`/`eval_set`/
 `model` tags to find any specific cell referenced below or in future
 checkpoints).
 
@@ -43,7 +50,7 @@ sets paired at full n, no dropped ids).
 | Qwen3-8B (zero-shot) | 47.47% [44.54, 50.40] | 45.33% [40.88, 50.00] | 58.33% [51.11, 65.56] |
 | Qwen3-8B (best-effort prompting = CoT)¹ | 65.57% [62.82, 68.32] | 62.89% [58.44, 67.33] | 73.33% [66.67, 79.44] |
 | **Frontier (`anthropic/claude-haiku-4.5`, CoT)²** | **70.90% [68.23, 73.56]** | **68.89% [64.67, 73.12]** | **66.11% [59.44, 72.78]** |
-| SFT (QLoRA) — Phase 1 (target: ≥69.07%, see `docs/phase1_gate.md`) | — | — | — |
+| SFT (QLoRA) — Phase 1 (target: ≥69.07%, see `docs/phase1_gate.md`)³ | — | — | — |
 | GRPO (verifiable reward) — Phase 2 | — | — | — |
 
 ¹ CoT, not few-shot, is the locked best-effort-prompting arm: it beat
@@ -74,12 +81,23 @@ near-frontier tier (Claude Haiku 4.5), not flagship — this target is
 calibrated to the model actually measured, not to an untested flagship
 ceiling.
 
+³ **SFT training is complete but not yet evaluated on any frozen eval set.**
+1 epoch, 5,338 train rows (after length filtering), single-GPU QLoRA:
+final `train_loss` 0.1054 (last logged step 0.0523), `eval_loss` 0.0498 on
+the held-out 5% monitoring slice (`data/processed/sft_val_v1.jsonl` — **not**
+one of the three frozen gate sets). Low loss here confirms the model learned
+the deterministic output-format template, **not** that it answers FinQA
+questions correctly — that requires running it through the frozen eval
+harness, which is the next step. Adapter published to
+[`iashu2k/opentune-qwen3-8b-sft`](https://huggingface.co/iashu2k/opentune-qwen3-8b-sft).
+
 Raw predictions: `results/raw/Qwen3-8B__*.jsonl`,
 `results/raw/anthropic--claude-haiku-4-5__*.jsonl`. All results with
 bootstrap CIs: `docs/baselines.md` (base matrix + frontier/gate section
 appended by `scripts/compare_frontier.py --append-to docs/baselines.md` —
 confirmed run). Standalone gate report: `docs/gate_decision.md`. Total
-frontier API spend: **$3.9994**.
+frontier API spend: **$3.9994**. Phase 1 GPU spend to date: **$0**
+(Kaggle free-tier T4, ~5.67 GPU-hours consumed by the SFT run).
 
 ## 2. Pipeline Diagram
 
@@ -114,6 +132,16 @@ uv run python scripts/run_frontier.py --estimate --eval-set all   # zero-cost co
 uv run python scripts/run_frontier.py --eval-set all
 # Cross-model gate comparison (frontier vs. Qwen CoT, paired McNemar):
 uv run python scripts/compare_frontier.py --append-to docs/baselines.md
+
+# --- Phase 1: SFT (run dataset build on Mac, training on Kaggle T4) ---
+uv run python scripts/build_sft_dataset.py   # -> data/processed/sft_train_v1.jsonl (5,351) / sft_val_v1.jsonl (282)
+# On Kaggle (GPU T4 x2 notebook, single-GPU pinned by default):
+#   !git clone https://github.com/iashu2k/opentune && cd opentune
+#   !pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
+#   !pip install trl peft transformers bitsandbytes accelerate wandb
+#   (authenticate HF + W&B via Kaggle secrets, then:)
+#   !python scripts/train_sft.py --epochs 1 \
+#       --hub-repo-id iashu2k/opentune-qwen3-8b-sft --wandb-project opentune-phase1
 ```
 
 ## 4. Dataset
@@ -122,8 +150,24 @@ uv run python scripts/compare_frontier.py --append-to docs/baselines.md
   logged in dataset card) — license **CC-BY-4.0**
 - **Core training set:** 5,828 decontaminated examples
   (6,251 raw → 124 non-numeric golds dropped → 6,127 → 299 contamination-dropped)
-- **Target training size:** 6–8k after mixing synthetic SEC-filing examples
-  (synthetic capped at 30–40%; synthetics pass the same decontamination gate)
+- **Phase 1 SFT training set (v1, built 2026-09-22):** 5,633 of the 5,828
+  decontaminated rows kept (96.65%) after excluding 195 rows using
+  `table_average`/`table_max`/`table_min`/`table_sum` ops (these reference
+  table row **labels**, not literal numbers, and resolving them requires
+  parsing the linearized table in `context` — out of scope for v1, logged
+  for a possible v2 pass). Every kept row's `program` string was
+  **re-executed and verified to match its stored gold** within the frozen
+  extractor's tolerance rule — 0 parse errors, 0 gold mismatches across all
+  5,633 rows (100% program-integrity rate). A deterministic 95/5 split
+  (seed 42) produced `data/processed/sft_train_v1.jsonl` (5,351 rows) and
+  `data/processed/sft_val_v1.jsonl` (282 rows, held out purely for SFT
+  loss-curve monitoring — **not** a substitute for the three frozen gate
+  eval sets below). See `docs/phase1_gate.md` and `scripts/build_sft_dataset.py`
+  for full methodology.
+- **Deferred to a later iteration:** synthetic SEC-filing example mixing
+  (originally targeted 6–8k total training rows with ≤30–40% synthetic) —
+  v1 trains on the 5,633 real FinQA rows only, per the "simplest thing that
+  could work" cost-discipline default.
 - **Eval sets (all frozen):**
   1. **FinQA test** — 1,127 rows. Zero-shot, CoT, and frontier CoT are run;
      few-shot on this set has **not** been run.
@@ -265,6 +309,31 @@ period; programs encode |base| explicitly (see experiment log).
 Core: divide 4,175 | subtract 2,540 | add 1,480 | multiply 550.
 Table band: table_average 92 | table_max 48 | table_sum 34 | table_min 27.
 Tail: exp 5; power/greater absent. Phase 2 format-reward grammar = this set.
+**Note (Phase 1):** the table_* band (201 op-instances across 195 rows,
+some rows use two table ops) is exactly what got excluded from the v1 SFT
+set above — this inventory is unchanged, only which rows get trained on
+in Phase 1 changed.
+
+### Phase 1 SFT target format (locked 2026-09-22, `scripts/build_sft_dataset.py`)
+
+SFT training targets follow the exact same frozen output contract as eval
+(reasoning → `Program:` line → `ANSWER:` line), but the reasoning is
+**synthesized deterministically from the `program` DSL**, never freely
+generated — because no natural-language reasoning trace exists anywhere in
+the source data, only the symbolic program and the final gold number.
+Terse, mechanical templates ("Step 1: subtract 1.2 from 34.8 to get 33.6
+(#0).") were chosen over more natural-sounding prose specifically to
+guarantee the reasoning can never contradict the gold answer, since it's
+derived from the same re-executed program that produces it.
+
+**Program DSL notes discovered while building this (both confirmed by
+re-execution against real rows, not guessed):**
+- `#N` references the 0-indexed output of a prior step.
+- `const_N` is a literal constant (e.g. `const_100`, `const_1000000`).
+- `const_mN` is the **negative** constant family — `const_m1` = -1.0. Found
+  in 16 rows; e.g. `multiply(3176, const_m1), divide(#0, 10379)` executes to
+  -0.306, matching the stored gold exactly. The parser supports the general
+  `const_m<N>` = -N form defensively, though only `const_m1` was observed.
 
 ## 5. Decisions Log
 
@@ -295,6 +364,14 @@ Tail: exp 5; power/greater absent. Phase 2 format-reward grammar = this set.
 | 2026-09-16 | **Phase 1 framing (resolved)** | **Proceed to SFT/GRPO with a revised, smaller target: close most of the +5.32pt (finqa_test) gap to near-frontier CoT prompting**, instead of (a) reframing around cost/latency, or (b) spending more to test a flagship-tier snapshot first | The measured gap is real (p<0.0001) and Qwen3-8B is already close enough that verifiable-reward RL/SFT is plausible to close most of it; a flagship-tier frontier ceiling remains untested and unclaimed — Phase 1 targets are set against the measured near-frontier gap, not an assumed larger one. Revisit and re-test against a flagship snapshot later if Phase 1 results warrant a stronger comparison |
 | 2026-09-22 | Phase 1 tracking | New W&B project **`opentune-phase1`**, kept separate from `opentune-phase0` | Phase 0's project stays frozen/historical; new SFT/GRPO run tags never mix into the closed baseline table, avoiding any ambiguity about which runs back which published number |
 | 2026-09-22 | **Phase 1 gate pre-registered** | SFT checkpoint must reach **≥69.07%** on finqa_test (≥+3.5pts over the 65.57% Qwen3-8B CoT baseline), **non-overlapping bootstrap 95% CIs**, i.e. closing **≥60%** of the measured 5.32pt gap to frontier CoT (70.90%). Full spec, methodology, and pre-committed decision branches (full pass / partial pass / fail) in `docs/phase1_gate.md` | Mirrors the Phase 0 discipline of locking a criterion before any results exist. 3.5pts is chosen deliberately below full gap closure — Phase 2 (GRPO) is expected to close the remainder, so Phase 1 isn't required to solve the whole gap alone |
+| 2026-09-22 | SFT v1 scope | Exclude `table_average/max/min/sum` rows (195/5,828, ~3.3%) from the v1 SFT set; defer synthetic SEC-filing mixing entirely | These ops reference table row labels, not literal numbers — resolving them needs table-cell extraction from `context`, real scope not worth it for v1. Small, logged exclusion beats silently forcing incorrect reasoning traces |
+| 2026-09-22 | SFT reasoning-trace synthesis | Terse, deterministic, program-derived templates ("Step 1: ... to get X (#0)."), not free-form generation | No natural-language rationale exists in the source data; template derivation guarantees the reasoning can never contradict the re-executed gold, at the cost of stylistic mismatch with real CoT prose (acceptable for v1, revisit if eval shows a format-compliance issue) |
+| 2026-09-22 | SFT val split | 5% held out (seed 42) for training-loss monitoring only — 5,351 train / 282 val | Watches for overfitting during training without touching any of the three frozen gate eval sets |
+| 2026-09-22 | Qwen3 thinking mode | `enable_thinking=False` for all SFT chat-template rendering | The task-spec's own reasoning→Program→ANSWER contract is the intended reasoning mechanism; Qwen3's native `<think>` tags would conflict with it |
+| 2026-09-22 | Multi-GPU training test | Explicitly tested 2-GPU training (no pin) on Kaggle T4×2 before committing to single-GPU by default | Resolves the open question carried from the 2026-09-14 inference-time bug: does it also affect training? |
+| 2026-09-22 | **GPU config for training: single-GPU** | Chose single-GPU over multi-GPU for the real run | Multi-GPU test did **not** crash (unlike the Phase 0 inference bug) but showed no speed benefit either (26.24 sec/it multi-GPU vs. 28.06 sec/it single-GPU — statistically equivalent, model comfortably fits one T4's VRAM). Single-GPU chosen for simplicity, not necessity |
+| 2026-09-22 | SFT epochs (v1) | 1 epoch, not 2 | Dry-run pace (~28 sec/it) projected ~10.4 hours for 2 epochs — exceeds a single Kaggle session and a large fraction of the weekly 30 GPU-hr quota. 1 epoch (~5.7 hrs) chosen as the safer first attempt; checkpoints push to HF Hub, so a second epoch can be resumed later if eval results show underfitting |
+| 2026-09-22 | HF Hub target | `iashu2k/opentune-qwen3-8b-sft` | Confirmed repo for all Phase 1 SFT adapter checkpoints |
 
 ## 6. Experiment Log
 
@@ -324,8 +401,16 @@ Negative results stay in. Every run: config, cost, result, verdict.
 | 2026-09-16 | Cross-model gate comparison | `scripts/compare_frontier.py --append-to docs/baselines.md`, paired bootstrap CI + exact McNemar, frontier vs. Qwen CoT, all 3 sets | $0 | finqa_test: +5.32pts, p<0.0001, CIs overlap. custom_eval: +6.00pts, p=0.0028, CIs overlap. sec_2026: −7.22pts, p=0.0919, CIs overlap | **Gate: FAIL**; **all baselines (base + frontier) published** to `docs/baselines.md` and `docs/gate_decision.md` |
 | 2026-09-16 | Phase 1 framing decision | Reviewed FAIL result and 3 options | $0 | Chose to proceed to SFT/GRPO with revised target (close most of the +5.32pt gap) over reframing to cost/latency or re-testing a flagship snapshot | Phase 0 closed; Phase 1 scoped |
 | 2026-09-22 | Phase 1 gate pre-registration | Target set before any SFT code/run exists: ≥69.07% finqa_test, non-overlapping CIs vs. 65.57% baseline | $0 | Full spec committed to `docs/phase1_gate.md`; decision branches (full/partial/fail pass) pre-committed | Kept — this is the gate SFT results will be judged against |
-| 2026-09-22 | SFT dataset build v1 | Excludes table_* ops; program re-execution gate | $0 | 5,828 input → 195 excluded (table ops) → 5,633 kept; 0 parse errors, 0 gold mismatches (100% program-integrity rate) | Kept — data/processed/sft_train_v1.jsonl |
-
+| 2026-09-22 | SFT dataset build v1 | Excludes table_* ops; program re-execution gate; `scripts/build_sft_dataset.py` | $0 | 5,828 input → 195 excluded (table ops) → 5,633 kept; 0 parse errors, 0 gold mismatches (100% program-integrity rate) | Kept — `data/processed/sft_train_v1.jsonl` |
+| 2026-09-22 | `const_m1` DSL discovery | Investigated a `ValueError` crash on an unrecognized program token | $0 | `const_m1` = -1.0 constant, confirmed by re-executing 16 affected rows against stored gold (100% match); parser generalized to `const_m<N>` = -N | Fixed; script hardened to log-and-skip any future unrecognized token instead of crashing |
+| 2026-09-22 | Val split carve-out | 5%/seed 42 deterministic split of the 5,633 kept rows | $0 | 5,351 train / 282 val, for training-loss monitoring only | Kept — does not touch any frozen gate eval set |
+| 2026-09-22 | Sequence-length check | Char-based token estimate on real dataset | $0 | p95≈1,955 tokens, p99≈2,639, max≈4,616 (est.) | `max_seq_length=3072` chosen; real tokenizer filtering deferred to the training script itself |
+| 2026-09-22 | Multi-GPU training test | Kaggle T4×2, no GPU pin, 100-sample/1-epoch dry run | $0 | No crash (unlike Phase 0's inference-time bug); 26.24 sec/it, `Data Parallel GPUs=1` (model-sharded, not data-parallel) | Informative — resolves the open bug-scope question; not adopted for the real run |
+| 2026-09-22 | Single-GPU training test | Same dry run, `CUDA_VISIBLE_DEVICES=0` | $0 | 28.06 sec/it — statistically equivalent to the multi-GPU test | Single-GPU adopted for the real run (simplicity, not a forced fix) |
+| 2026-09-22 | HF Hub auth fix | First real-run attempt hit `401 Unauthorized` on `push_to_hub` | $0 | Kaggle session wasn't authenticated to HF; fixed via `huggingface_hub.login()` using a Kaggle secret before the training script runs | Fixed; documented as a required pre-run cell |
+| 2026-09-22 | W&B auth fix | Second real-run attempt hung on an interactive `wandb: Enter your choice:` prompt | $0 | Non-interactive Kaggle cells can't answer stdin prompts; fixed via `wandb.login(key=...)` using a Kaggle secret before the script runs | Fixed; documented as a required pre-run cell |
+| 2026-09-22–23 | **SFT v1 training run** | Qwen3-8B QLoRA (r=16, α=16, all attn+MLP proj targets), 1 epoch, 5,338/5,351 train rows kept after length filter (13 dropped, max_seq_length=3072), single-GPU pin, `enable_thinking=False`, completion-only loss masking | $0 (Kaggle free-tier T4, ~5.67 GPU-hrs) | 668/668 steps completed; final `train_loss`=0.1054 (last step 0.0523), `eval_loss`=0.0498 on the 279-row (3 dropped) val slice; `train_runtime`=20,401s (~5.67h) | Kept — adapter pushed to [`iashu2k/opentune-qwen3-8b-sft`](https://huggingface.co/iashu2k/opentune-qwen3-8b-sft). Low loss confirms format learned, **not** FinQA accuracy — gate evaluation is the next step, not yet run |
+| 2026-09-22–23 | Kaggle session disconnect | Console output lost near run completion during the real training run | $0 | Training had already finished and the HF push had already succeeded before the disconnect — only the console *display* of the final metrics was lost, not the artifact. Recovered final metrics from the W&B run summary instead | Documented as an operational lesson: **W&B is the authoritative source for training metrics going forward, not console logs** |
 
 ## 7. Failure Modes / Known Limitations
 
@@ -367,6 +452,26 @@ Negative results stay in. Every run: config, cost, result, verdict.
 - The W&B project link above is a runs-table view, not per-cell deep links;
   a reviewer needs to filter by `arm`/`eval_set`/`model` tags to find a
   specific baseline run rather than clicking a single per-number link
+- **Phase 1 SFT training set excludes ~3.3% of decontaminated train**
+  (table_average/max/min/sum rows) and defers synthetic SEC-filing mixing
+  entirely — v1 trains on 5,633 real FinQA rows only, smaller than the
+  original 6-8k target. Revisit both if v1 eval results fall short of the
+  pre-registered gate.
+- **SFT reasoning traces are template-synthesized, not natural CoT prose** —
+  terse and mechanical ("Step 1: subtract X from Y..."), chosen to
+  guarantee correctness over stylistic naturalness. If eval shows the model
+  produces oddly robotic reasoning as a side effect, this is the likely
+  cause, and a v2 pass with more natural templating is the fix.
+- **Low SFT training/eval loss (0.05, 0.05) reflects format-learning on a
+  low-entropy synthetic target, not FinQA accuracy** — this number cannot
+  be compared to the frontier/base accuracy percentages in §1 and should
+  not be reported as a headline result. The pre-registered gate in
+  `docs/phase1_gate.md` is the only number that determines Phase 1 success.
+- Multi-GPU training on Kaggle T4×2 uses Unsloth's naive model-sharding
+  (`Data Parallel GPUs=1`), not true data-parallel training — it neither
+  crashed nor sped anything up in the one test run made; single-GPU was
+  chosen for simplicity, not because multi-GPU was proven unsafe here
+  (unlike the inference-time bug in Phase 0, which was a proven crash).
 
 ## 8. Artifacts Index
 
@@ -380,6 +485,13 @@ Negative results stay in. Every run: config, cost, result, verdict.
   `finqa_train_decontaminated.parquet`, `decontamination_report.json`
 - Eval sets: `data/eval/custom_eval.parquet` (n=450, seed 42),
   `data/eval/sec_2026_eval.parquet` + `sec_2026_report.json` (n=180)
+- **Phase 1 SFT dataset:** `scripts/build_sft_dataset.py`,
+  `data/processed/sft_train_v1.jsonl` (5,351), `data/processed/sft_val_v1.jsonl`
+  (282, monitoring-only), `data/processed/sft_train_v1_report.json`
+  (exclusion/parse-error/mismatch counts)
+- **Phase 1 SFT training:** `scripts/train_sft.py` (Unsloth QLoRA + TRL
+  `SFTTrainer`, single-GPU, `enable_thinking=False`, completion-only loss
+  masking), `outputs/sft_v1/length_filter_report.json`
 - Base baselines: `scripts/run_baselines.py`, `scripts/aggregate_results.py`,
   `results/raw/Qwen3-8B__*.jsonl`, `results/aggregates.json`, `docs/baselines.md`
 - Frontier baseline: `scripts/run_frontier.py` (OpenRouter,
@@ -391,8 +503,10 @@ Negative results stay in. Every run: config, cost, result, verdict.
   `docs/gate_decision.md` (standalone), plus appended section in
   `docs/baselines.md` (all results with bootstrap CIs now live in one file)
 - Run tracking: [W&B project `opentune-phase0`](https://wandb.ai/iashu2k-iashu2k/opentune-phase0/table?nw=nwuseriashu2k)
-  (frozen), `opentune-phase1` (new, live — Phase 1 onward)
-- Weights + model cards: — (HF Hub, Phase 1+)
+  (frozen), `opentune-phase1` (live — Phase 1 onward)
+- **Weights + model cards:** SFT v1 adapter —
+  [`iashu2k/opentune-qwen3-8b-sft`](https://huggingface.co/iashu2k/opentune-qwen3-8b-sft)
+  on HF Hub (pushed 2026-09-23)
 - Reward function: `src/opentune/` (Phase 2)
 - Demo: — (pre-recorded video, Phase 4)
 
@@ -423,6 +537,8 @@ TODO — code license, synthetic-data provenance. Finalized before Phase 4.
 | 2026-09-16 | 0 | Cross-model gate comparison run and appended to `docs/baselines.md`: Phase 0 gate result = FAIL — finqa_test delta +5.32pts (p<0.0001, CIs overlap), below the pre-registered ≥8pt bar. |
 | 2026-09-16 | 0→1 | **Phase 0 closed.** Decision: proceed to Phase 1 (SFT/GRPO) with revised target — close most of the +5.32pt gap to near-frontier CoT prompting, rather than beat it by 8pts or reframe to cost/latency. |
 | 2026-09-22 | 1 | **Phase 1 gate pre-registered** (`docs/phase1_gate.md`) before any SFT training code or checkpoint exists: SFT must reach ≥69.07% on finqa_test (≥+3.5pts vs. Qwen3-8B CoT), non-overlapping bootstrap 95% CIs, closing ≥60% of the 5.32pt gap to frontier CoT. New W&B project `opentune-phase1` created for Phase 1 tracking, kept separate from the frozen `opentune-phase0` table. |
+| 2026-09-22 | 1 | **SFT dataset built:** `scripts/build_sft_dataset.py` excludes table_* op rows (195/5,828) and re-executes every remaining program against its gold (0 parse errors, 0 mismatches on 5,633 rows). `const_m1`-family DSL constant discovered and handled. Deterministic 95/5 val split (seed 42) → `sft_train_v1.jsonl` (5,351) / `sft_val_v1.jsonl` (282, monitoring-only). |
+| 2026-09-22–23 | 1 | **SFT v1 training run completed** on Kaggle T4 (single-GPU, tested multi-GPU explicitly first — no crash, no speed benefit either): Qwen3-8B QLoRA, 1 epoch, 668 steps, `train_loss`=0.1054 (final step 0.0523), `eval_loss`=0.0498. Adapter pushed to [`iashu2k/opentune-qwen3-8b-sft`](https://huggingface.co/iashu2k/opentune-qwen3-8b-sft). **No accuracy numbers exist yet** — next step is evaluating this checkpoint against the frozen finqa_test/custom_eval/sec_2026 sets to check the pre-registered gate. |
 
 ---
 
@@ -431,6 +547,6 @@ TODO — code license, synthetic-data provenance. Finalized before Phase 4.
 Development on M2 Air 8GB (scripting, data curation, ≤1B dry-runs only). All 7–9B
 training and evaluation runs on Kaggle / Colab free tier; RunPod A100 (~$1–1.50/hr)
 as paid fallback. Budget target: ≤ $30 total. Budget spent to date: **$3.9994**
-(frontier baseline via OpenRouter; base baselines ran on free-tier GPU at $0
-API cost).
-</content>
+(frontier baseline via OpenRouter; base baselines and the Phase 1 SFT run both
+used free-tier GPU at $0 API cost — the SFT run consumed ~5.67 of the weekly
+30 Kaggle GPU-hour quota).
